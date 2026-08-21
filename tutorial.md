@@ -552,3 +552,244 @@ That makes the test much less brittle.
 
 
 ### 9. A subtle problem
+There's something interesting about the code we've just written.
+
+Our test calls:
+```python
+create_app()
+```
+and `create_app()` calls:
+```python
+configure_logging()
+```
+So every time we create an application, we're configuring global logging.
+
+That's not ideal.
+
+For example, imagine we eventually have:
+```bash
+test_search_movie
+test_search_tv
+test_tmdb_error
+test_bear_export
+test_health
+...
+```
+and each test creates an application.
+
+We don't want every application creation to repeatedly reconfigure global logging.
+
+This is a good example of why application lifecycle and global configuration need to be considered separately.
+
+We're not going to solve that yet.
+
+Instead, I want you to see the problem first.
+
+## Lesson 4 — Build the TMDB HTTP client
+### 1. First, understand the TMDB authentication
+TMDB's current API supports authentication using an **API Read Access Token**, sent as a Bearer token in the `Authorization` header.
+
+Conceptually, the request looks like this:
+```text
+GET /3/search/movie?query=The%20Matrix
+Authorization: Bearer YOUR_TOKEN
+```
+
+### 2. Add the TMDB base URL to configuration
+In `src/movie_to_bear/core/config.py`, add: 
+```python
+class Settings(BaseSettings):
+    tmdb_api_token: str
+    tmdb_base_url: str = "https://api.themoviedb.org/3" <--
+```
+
+Notice that `tmdb_api_token` is mandatory.   
+`tmdb_base_url` is optional because it has a default.
+
+> **Secrets/configuration that must be supplied**   
+versus   
+**configuration with a sensible application default.**   
+
+### 3. Add the HTTP timeout
+Also add:
+```python
+class Settings(BaseSettings):
+    tmdb_api_token: str
+    tmdb_base_url: str = "https://api.themoviedb.org/3"
+    tmdb_timeout: float = 10.0 <--
+```
+
+### 4. Create the TMDB client
+Create:
+```text
+src/movie_to_bear/clients/__init__.py
+src/movie_to_bear/clients/tmdb.py
+```
+
+The client's function is to communicate with TMDB.
+It doesn't know anything else about the API - FastAPI, Bear, the HTTP routes, etc. 
+
+### 5. Create TMDBClient
+Update `src/movie_to_bear/clients/tmdb.py` with the follwoing content: 
+```python
+import httpx
+import structlog
+
+from movie_to_bear.core.config import Settings
+
+
+logger = structlog.get_logger()
+
+
+class TMDBClient:
+    def __init__(self, settings: Settings) -> None:
+        self._base_url = settings.tmdb_base_url
+        self._client = httpx.AsyncClient(
+            base_url=self._base_url,
+            headers={
+                "Authorization": f"Bearer {settings.tmdb_api_token}",
+                "Accept": "application/json",
+            },
+            timeout=settings.tmdb_timeout,
+        )
+
+    async def close(self) -> None:
+        await self._client.aclose()
+```
+### 6. Understand the constructor
+This: 
+```python
+self._client = httpx.AsyncClient(...)
+```
+creates a reuseable async HTTP client.
+
+We're configuring:
+```python
+base_url=self._base_url
+```
+so later we can write:
+```python
+await self._client.get("/search/movie")
+```
+
+### 7. Authentication
+This:
+```python
+headers={
+    "Authorization": f"Bearer {settings.tmdb_api_token}",
+    "Accept": "application/json",
+}
+```
+means every request made by this client gets:
+```text
+Authorization: Bearer <token>
+Accept: application/json
+```
+automatically.
+
+That's another reason to encapsulate HTTP communication in a client.
+
+### 8. Add the first API operation
+Add:
+```python
+    async def search_movies(self, query: str) -> dict:
+        response = await self._client.get(
+            "/search/movie",
+            params={
+                "query": query,
+            },
+        )
+
+        response.raise_for_status()
+
+        return response.json()
+```
+
+TMDB documents /3/search/movie as the movie search endpoint.
+
+So:
+```python
+await client.search_movies("The Matrix")
+```
+eventually results in:
+```text
+GET /search/movie?query=The+Matrix
+```
+
+### 9. Why `raise_for_status()`?
+This is important!
+
+If TMDB returns `200` everything continues.
+`httpx`raises an exception for anything else. 
+
+
+### 10. Add logging
+```python
+    async def search_movies(self, query: str) -> dict:
+        logger.info(
+            "tmdb_search",
+            media_type="movie",
+            query=query,
+        )
+
+        response = await self._client.get(
+            "/search/movie",
+            params={
+                "query": query,
+            },
+        )
+
+        response.raise_for_status()
+
+        logger.info(
+            "tmdb_response",
+            media_type="movie",
+            status_code=response.status_code,
+        )
+
+        return response.json()
+```
+> Don't log the API token.
+
+
+11. But don't call TMDB from a test
+We don't want:
+```python
+async def test_search_movies():
+    client = TMDBClient(settings)
+
+    result = await client.search_movies("The Matrix")
+```
+because it makes a real request.
+Instead, our test will replace the HTTP layer with a fake response.
+This makes our tests:
+
+- fast
+- deterministic
+- independent of the Internet
+- independent of TMDB availability
+- independent of API rate limits
+
+### 12. Before we write the test
+Our current TMDBClient creates its own:
+```python
+httpx.AsyncClient(...)
+```
+inside:
+```python
+__init__
+```
+That makes testing harder.
+
+We could mock the internal _client, but there's a cleaner approach: **dependency injection.**
+
+We'll eventually allow:
+```python
+TMDBClient(
+    settings=settings,
+    http_client=mock_http_client,
+)
+```
+during testing.
+
+## Lesson 5 — Dependency injection and mocking httpx
