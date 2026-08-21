@@ -383,4 +383,172 @@ flowchart TD
 
 ```
 
-## Lesson 3 — Structured JSON logging
+## Lesson 3 — Structured logging
+### 1. The target architecture
+### 2. Create the logging module
+Create `src/movie_to_bear/core/logging.py` with the following content:
+```python
+import logging
+import sys
+
+import structlog
+
+
+def configure_logging() -> None:
+    logging.basicConfig(
+        format="%(message)s",
+        stream=sys.stdout,
+        level=logging.INFO,
+    )
+
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+```
+
+### 3. Refactor `main.py`
+```python
+import structlog
+from fastapi import FastAPI
+
+from movie_to_bear.core.logging import configure_logging
+
+
+def create_app() -> FastAPI:
+    configure_logging()
+
+    app = FastAPI(
+        title="Movie to Bear",
+        version="0.1.0",
+    )
+
+    logger = structlog.get_logger()
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        logger.info(
+            "health_check",
+            status="ok",
+        )
+
+        return {"status": "ok"}
+
+    return app
+
+
+app = create_app()
+```
+
+
+> Understand the following concepts:
+- **Application Factory**   
+    ```python
+    def create_app() -> FastAPI:
+    ```
+    This function is capable of constructing our application.
+    
+    ´´´python
+    app = create_app()
+    ```
+    This creates the normal application instance that `Unicorn` uses.
+
+### 4. Run the tests
+```bash
+uv run pytest
+uv run uvicorn movie_to_bear.main:app --reload
+curl http://127.0.0.1:8000/health
+```
+
+### 5. Understand what we did
+The below code creates an event with two pieces of information, `event` and `status`:
+```python
+logger.info(
+    "health_check",
+    status="ok",
+)
+
+```
+The processes add `logger`, `level` and `timestamp`.
+
+`JSONRenderer` serialises the event.    
+We don't construct the JSON ourselves.
+
+Don't do this:
+```python
+logger.info(
+    '{"event": "health_check", "status": "ok"}'
+)
+```
+
+### 6. Add a meaningful field
+
+Change the following code in `src\movie_to_bear\main.py`:
+```python
+logger.info(
+    "health_check",
+    status="ok",
+)
+```
+to:
+```python
+logger.info(
+    "health_check",
+    status="ok",
+    component="api",
+)
+```
+
+
+### 7. Don't test the JSON string
+`structlog` provides testing utilities specifically for capturing log events.
+
+Modify `tests/test_health.py` to contain:
+```python
+import structlog
+from fastapi.testclient import TestClient
+
+from movie_to_bear.main import create_app
+
+
+def test_health() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    with structlog.testing.capture_logs() as logs:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+    health_logs = [
+        log
+        for log in logs
+        if log["event"] == "health_check"
+    ]
+
+    assert len(health_logs) == 1
+    assert health_logs[0]["status"] == "ok"
+    assert health_logs[0]["component"] == "api"
+
+```
+
+We're not asserting:
+```python
+assert some_json_string == "..."
+```
+
+We're inspecting the actual structured event.   
+That makes the test much less brittle.
+
+
+### 9. A subtle problem
