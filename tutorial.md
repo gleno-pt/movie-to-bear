@@ -1802,3 +1802,251 @@ uv run ruff format --check .
 uv run coverage run -m pytest
 uv run coverage report
 ```
+## Lesson 9 — TMDB TV search
+
+### 1. Add a TV model
+
+Add new models to `src/movie_to_bear/models/tmdb.py`:
+```python
+class TVSearchResult(BaseModel):
+    id: int
+    name: str
+    first_air_date: date | None = None
+    overview: str | None = None
+    poster_path: str | None = None
+
+
+class TVSearchResponse(BaseModel):
+    page: int
+    results: list[TVSearchResult]
+    total_pages: int
+    total_results: int
+```
+
+### 2. Add `search_tv()`to the client
+Add the following content to `src/movie_to_bear/clients/tmdb.py`:
+```python
+async def search_tv(self, query: str) -> dict:
+    logger.info(
+        "tmdb_search",
+        media_type="tv",
+        query=query,
+    )
+
+    response = await self._http_client.get(
+        "/search/tv",
+        params={"query": query},
+    )
+
+    response.raise_for_status()
+
+    logger.info(
+        "tmdb_response",
+        media_type="tv",
+        status_code=response.status_code,
+    )
+
+    return response.json()
+```
+
+### 3. Add TV search to the service
+
+Add the following to `src/movie_to_bear/services/tmdb.py`:
+```python
+from movie_to_bear.models.tmdb import (
+    MovieSearchResponse,
+    TVSearchResponse,
+)
+
+
+async def search_tv(
+    self,
+    query: str,
+) -> MediaSearchResponse:
+    response = await self._client.search_tv(query)
+
+    tmdb_response = TVSearchResponse.model_validate(response)
+
+    return MediaSearchResponse(
+        page=tmdb_response.page,
+        results=[
+            Media(
+                id=show.id,
+                media_type=MediaType.TV,
+                title=show.name,
+                overview=show.overview,
+                release_date=show.first_air_date,
+                poster_path=show.poster_path,
+            )
+            for show in tmdb_response.results
+        ],
+        total_pages=tmdb_response.total_pages,
+        total_results=tmdb_response.total_results,
+    )
+```
+
+### 4. Add the TV route
+Add the following content to `src/movie_to_bear/api/routes.py`:
+```python
+from movie_to_bear.models.media import MediaSearchResponse
+
+
+@router.get(
+    "/search/tv",
+    response_model=MediaSearchResponse,
+)
+async def search_tv(
+    query: str = Query(min_length=1),
+    service: TMDBService = Depends(get_tmdb_service),
+) -> MediaSearchResponse:
+    return await service.search_tv(query)
+```
+
+### 5. Test the TMDB client
+Add the following to `tests/test_tmdb.py`:
+```python
+async def test_search_tv() -> None:
+    request = httpx.Request(
+        "GET",
+        "https://api.themoviedb.org/3/search/tv",
+    )
+
+    response = httpx.Response(
+        status_code=200,
+        request=request,
+        json={
+            "page": 1,
+            "results": [
+                {
+                    "id": 1399,
+                    "name": "Game of Thrones",
+                    "first_air_date": "2011-04-17",
+                    "overview": "Seven noble families...",
+                    "poster_path": "/poster.jpg",
+                }
+            ],
+            "total_pages": 1,
+            "total_results": 1,
+        },
+    )
+
+    http_client = AsyncMock(spec=httpx.AsyncClient)
+    http_client.get.return_value = response
+
+    settings = Settings(
+        tmdb_api_token="test-token",
+    )
+
+    client = TMDBClient(
+        settings=settings,
+        http_client=http_client,
+    )
+
+    result = await client.search_tv("Game of Thrones")
+
+    assert result["page"] == 1
+    assert result["results"][0]["id"] == 1399
+    assert result["results"][0]["name"] == "Game of Thrones"
+
+    http_client.get.assert_awaited_once_with(
+        "/search/tv",
+        params={"query": "Game of Thrones"},
+    )
+```
+
+
+### 6. Test the service translation
+
+Add the following to `tests/test_tmdb_service.py`:
+
+```python
+async def test_search_tv() -> None:
+    client = AsyncMock()
+
+    client.search_tv.return_value = {
+        "page": 1,
+        "results": [
+            {
+                "id": 1399,
+                "name": "Game of Thrones",
+                "first_air_date": "2011-04-17",
+                "overview": "Seven noble families...",
+                "poster_path": "/poster.jpg",
+            }
+        ],
+        "total_pages": 1,
+        "total_results": 1,
+    }
+
+    service = TMDBService(client)
+
+    result = await service.search_tv("Game of Thrones")
+
+    assert isinstance(result, MediaSearchResponse)
+    assert result.page == 1
+
+    media = result.results[0]
+
+    assert media.id == 1399
+    assert media.title == "Game of Thrones"
+    assert media.media_type == MediaType.TV
+    assert media.release_date is not None
+    assert media.release_date.year == 2011
+
+    client.search_tv.assert_awaited_once_with("Game of Thrones")
+```
+
+
+
+### 7. Test the API
+Add another test to `tests/test_search.py`:
+```python
+class FakeTMDBService:
+    async def search_movies(self, query: str) -> MediaSearchResponse:
+        return MediaSearchResponse(
+            page=1,
+            results=[
+                Media(
+                    id=603,
+                    media_type=MediaType.MOVIE,
+                    title="The Matrix",
+                    release_date="1999-03-30",
+                )
+            ],
+            total_pages=1,
+            total_results=1,
+        )
+
+    async def search_tv(self, query: str) -> MediaSearchResponse:
+        return MediaSearchResponse(
+            page=1,
+            results=[
+                Media(
+                    id=1399,
+                    media_type=MediaType.TV,
+                    title="Game of Thrones",
+                    release_date="2011-04-17",
+                )
+            ],
+            total_pages=1,
+            total_results=1,
+        )
+```
+
+
+### 8. Run the tests
+
+
+
+### 9. We now have a useful abstraction
+TMDB has two different APIs with two different response formats.   
+The application only has one.   
+
+
+
+### 10. One thing I want you to notice
+We have two endpoints:
+- movies
+- tv
+
+We want to allow the user to search for a title, and not be bothered with weather it is a movie or a tv series.

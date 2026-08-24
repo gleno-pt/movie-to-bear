@@ -16,3 +16,18 @@ class MovieSearchResponse(BaseModel):
     results: list[MovieSearchResult]
     total_pages: int
     total_results: int
+
+
+class TVSearchResult(BaseModel):
+    id: int
+    name: str
+    first_air_date: date | None = None
+    overview: str | None = None
+    poster_path: str | None = None
+
+
+class TVSearchResponse(BaseModel):
+    page: int
+    results: list[TVSearchResult]
+    total_pages: int
+    total_results: int

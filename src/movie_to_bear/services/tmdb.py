@@ -4,7 +4,10 @@ from movie_to_bear.models.media import (
     MediaSearchResponse,
     MediaType,
 )
-from movie_to_bear.models.tmdb import MovieSearchResponse
+from movie_to_bear.models.tmdb import (
+    MovieSearchResponse,
+    TVSearchResponse,
+)
 
 
 class TMDBService:
@@ -31,6 +34,31 @@ class TMDBService:
                     poster_path=movie.poster_path,
                 )
                 for movie in tmdb_response.results
+            ],
+            total_pages=tmdb_response.total_pages,
+            total_results=tmdb_response.total_results,
+        )
+
+    async def search_tv(
+        self,
+        query: str,
+    ) -> MediaSearchResponse:
+        response = await self._client.search_tv(query)
+
+        tmdb_response = TVSearchResponse.model_validate(response)
+
+        return MediaSearchResponse(
+            page=tmdb_response.page,
+            results=[
+                Media(
+                    id=show.id,
+                    media_type=MediaType.TV,
+                    title=show.name,
+                    overview=show.overview,
+                    release_date=show.first_air_date,
+                    poster_path=show.poster_path,
+                )
+                for show in tmdb_response.results
             ],
             total_pages=tmdb_response.total_pages,
             total_results=tmdb_response.total_results,

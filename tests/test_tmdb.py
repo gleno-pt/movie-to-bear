@@ -79,3 +79,52 @@ async def test_search_movies_raises_for_http_error() -> None:
 
     with pytest.raises(httpx.HTTPStatusError):
         await client.search_movies("The Matrix")
+
+
+async def test_search_tv() -> None:
+    request = httpx.Request(
+        "GET",
+        "https://api.themoviedb.org/3/search/tv",
+    )
+
+    response = httpx.Response(
+        status_code=200,
+        request=request,
+        json={
+            "page": 1,
+            "results": [
+                {
+                    "id": 1399,
+                    "name": "Game of Thrones",
+                    "first_air_date": "2011-04-17",
+                    "overview": "Seven noble families...",
+                    "poster_path": "/poster.jpg",
+                }
+            ],
+            "total_pages": 1,
+            "total_results": 1,
+        },
+    )
+
+    http_client = AsyncMock(spec=httpx.AsyncClient)
+    http_client.get.return_value = response
+
+    settings = Settings(
+        tmdb_api_token="test-token",
+    )
+
+    client = TMDBClient(
+        settings=settings,
+        http_client=http_client,
+    )
+
+    result = await client.search_tv("Game of Thrones")
+
+    assert result["page"] == 1
+    assert result["results"][0]["id"] == 1399
+    assert result["results"][0]["name"] == "Game of Thrones"
+
+    http_client.get.assert_awaited_once_with(
+        "/search/tv",
+        params={"query": "Game of Thrones"},
+    )

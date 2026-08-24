@@ -45,3 +45,25 @@ class TMDBClient:
         )
 
         return response.json()
+
+    async def search_tv(self, query: str) -> dict:
+        logger.info(
+            "tmdb_search",
+            media_type="tv",
+            query=query,
+        )
+
+        response = await self._http_client.get(
+            "/search/tv",
+            params={"query": query},
+        )
+
+        response.raise_for_status()
+
+        logger.info(
+            "tmdb_response",
+            media_type="tv",
+            status_code=response.status_code,
+        )
+
+        return response.json()

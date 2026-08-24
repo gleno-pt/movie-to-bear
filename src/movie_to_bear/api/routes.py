@@ -18,3 +18,14 @@ async def search_movies(
     service: TMDBService = Depends(get_tmdb_service),
 ) -> MediaSearchResponse:
     return await service.search_movies(query)
+
+
+@router.get(
+    "/search/tv",
+    response_model=MediaSearchResponse,
+)
+async def search_tv(
+    query: str = Query(min_length=1),
+    service: TMDBService = Depends(get_tmdb_service),
+) -> MediaSearchResponse:
+    return await service.search_tv(query)
