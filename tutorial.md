@@ -1076,3 +1076,118 @@ uv run coverage run -m pytest
 uv run coverage report
 ```
 
+## Lesson 6 — The TMDB service layer
+We have the following:
+```mermaid
+flowchart LR
+    fastapi[fastAPI Endpoint]
+    client[TMDB Client]
+    tmdb[TMDB]
+
+    fastapi-->client
+    client-->httpx
+    httpx-->tmdb
+```
+A service layer needs to be introduced: 
+```mermaid
+flowchart LR
+    fastapi[fastAPI Endpoint]
+    svc[TMDB Service]
+    client[TMDB Client]
+    tmdb[TMDB]
+    fastapi-->svc
+    svc-->client
+    client-->tmdb
+```
+
+The distinction is important:
+- Client = knows how to communicate with TMDB.
+- Service = knows what our application wants to do with TMDB.
+- FastAPI route = handles HTTP requests/responses.
+
+### 1. Why do we need a service?
+
+### 2. Create the service package
+Create the following:
+```bash
+src/movie_to_bear/services/
+├── __init__.py
+└── tmdb.py
+```
+
+### 3. Create TMDBService
+
+Put this into `src/movie_to_bear/services/tmdb.py`:
+
+```python
+from movie_to_bear.clients.tmdb import TMDBClient
+
+class TMDBService:
+    def __init__(self, client: TMDBClient) -> None:
+        self._client = client
+
+
+    async def search_movies(self, query: str) -> dict:
+        return await self._client.search_movies(query)
+```
+
+
+### 4. Client vs service
+Now the distinction becomes much more meaningful.
+
+- The client returns **TMDB data**.
+- The service returns **application data**.
+
+### 5. Don't return dict forever
+We don't want our application to become dependent on arbitrary TMDB JSON structures.   
+If TMDB changes their structure, we don't want it to affect us too much.    
+The application should eventually have its own model.   
+
+### 6. Test the service
+
+Create `tests/test_tmdb_service.py` with the following content:
+```python
+from unittest.mock import AsyncMock
+
+from movie_to_bear.services.tmdb import TMDBService
+
+
+async def test_search_movies() -> None:
+    client = AsyncMock()
+
+    client.search_movies.return_value = {
+        "page": 1,
+        "results": [
+            {
+                "id": 603,
+                "title": "The Matrix",
+            }
+        ],
+        "total_pages": 1,
+        "total_results": 1,
+    }
+
+    service = TMDBService(client)
+
+    result = await service.search_movies("The Matrix")
+
+    assert result["page"] == 1
+    assert result["results"][0]["id"] == 603
+    assert result["results"][0]["title"] == "The Matrix"
+
+    client.search_movies.assert_awaited_once_with("The Matrix")
+```
+
+We'll mock the **client**, not HTTP.   
+Each layer has a focused test.   
+The client mocked HTTP   
+The service will mock the client.
+
+
+## 7. Run the tests
+Run the tests: 
+```bash
+uv run pytest
+```
+
+
