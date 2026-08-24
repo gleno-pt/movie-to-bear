@@ -7,10 +7,13 @@ logger = structlog.get_logger()
 
 
 class TMDBClient:
-    def __init__(self, settings: Settings) -> None:
-        self._base_url = settings.tmdb_base_url
-        self._client = httpx.AsyncClient(
-            base_url=self._base_url,
+    def __init__(
+        self,
+        settings: Settings,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._http_client = http_client or httpx.AsyncClient(
+            base_url=settings.tmdb_base_url,
             headers={
                 "Authorization": f"Bearer {settings.tmdb_api_token}",
                 "Accept": "application/json",
@@ -18,6 +21,8 @@ class TMDBClient:
             timeout=settings.tmdb_timeout,
         )
 
+    async def close(self) -> None:
+        await self._http_client.aclose()
 
     async def search_movies(self, query: str) -> dict:
         logger.info(
@@ -26,11 +31,9 @@ class TMDBClient:
             query=query,
         )
 
-        response = await self._client.get(
+        response = await self._http_client.get(
             "/search/movie",
-            params={
-                "query": query,
-            },
+            params={"query": query},
         )
 
         response.raise_for_status()
@@ -41,6 +44,4 @@ class TMDBClient:
             status_code=response.status_code,
         )
 
-        return response.json()    
-    async def close(self) -> None:
-        await self._client.aclose()
+        return response.json()

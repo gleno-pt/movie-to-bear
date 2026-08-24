@@ -793,3 +793,286 @@ TMDBClient(
 during testing.
 
 ## Lesson 5 — Dependency injection and mocking httpx
+
+### 1. Modify `TMDBClient`
+
+Change the constructor in `src/movie_to_bear/clients/tmdb.py`:
+```python
+import httpx
+import structlog
+
+from movie_to_bear.core.config import Settings
+
+
+logger = structlog.get_logger()
+
+
+class TMDBClient:
+    def __init__(
+        self,
+        settings: Settings,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._http_client = http_client or httpx.AsyncClient(
+            base_url=settings.tmdb_base_url,
+            headers={
+                "Authorization": f"Bearer {settings.tmdb_api_token}",
+                "Accept": "application/json",
+            },
+            timeout=settings.tmdb_timeout,
+        )
+
+    async def close(self) -> None:
+        await self._http_client.aclose()
+
+    async def search_movies(self, query: str) -> dict:
+        logger.info(
+            "tmdb_search",
+            media_type="movie",
+            query=query,
+        )
+
+        response = await self._http_client.get(
+            "/search/movie",
+            params={"query": query},
+        )
+
+        response.raise_for_status()
+
+        logger.info(
+            "tmdb_response",
+            media_type="movie",
+            status_code=response.status_code,
+        )
+
+        return response.json()
+```
+
+The important part is:
+```python
+http_client: httpx.AsyncClient | None = None
+```
+If we don't provide one:
+```python
+TMDBClient(settings)
+```
+the class creates a real HTTP client.
+
+But in a test we can provide one:
+```python
+TMDBClient(
+    settings,
+    http_client=fake_client,
+)
+```
+That's dependency injection.
+
+### 2. Why this is useful
+> A class should receive important external dependencies rather than making them impossible to replace.
+
+### 3. Create the TMDB tests
+Create `tests/test_tmdb.py` with the follwing content:
+```python
+from unittest.mock import AsyncMock
+
+import httpx
+
+from movie_to_bear.clients.tmdb import TMDBClient
+from movie_to_bear.core.config import Settings
+
+
+async def test_search_movies() -> None:
+    response = httpx.Response(
+        status_code=200,
+        json={
+            "page": 1,
+            "results": [
+                {
+                    "id": 603,
+                    "title": "The Matrix",
+                }
+            ],
+            "total_pages": 1,
+            "total_results": 1,
+        },
+    )
+
+    http_client = AsyncMock(spec=httpx.AsyncClient)
+    http_client.get.return_value = response
+
+    settings = Settings(
+        tmdb_api_token="test-token",
+    )
+
+    client = TMDBClient(
+        settings=settings,
+        http_client=http_client,
+    )
+
+    result = await client.search_movies("The Matrix")
+
+    assert result["page"] == 1
+    assert result["results"][0]["id"] == 603
+    assert result["results"][0]["title"] == "The Matrix"
+
+    http_client.get.assert_awaited_once_with(
+        "/search/movie",
+        params={"query": "The Matrix"},
+    )
+```
+
+### 4. What's happening here?
+
+#### Fake response
+An actual `httpx.Response` is constructed:
+```python
+response = httpx.Response(
+    status_code=200,
+    json={...},
+)
+
+```
+No actual request occurs.
+
+#### Fake client
+We are creating a mock that behaves like an `AsyncClient`:
+```python
+http_client = AsyncMock(spec=httpx.AsyncClient)
+```
+
+When we make a request to the mock client, no request is made.
+The predefined response is returned.
+
+### 5. We're testing more than the result
+This assertion is particularly useful:
+```python
+http_client.get.assert_awaited_once_with(
+    "/search/movie",
+    params={"query": "The Matrix"},
+)
+```
+We're checking that our client actually made the correct HTTP request.
+
+### 6. Run it
+
+#### Issue
+1. Failed: async def functions are not natively supported.
+    When running `uv run pytest`, I received the following error:
+    ```bash
+    tests/test_tmdb.py::test_search_movies - Failed: async def functions are not natively supported.
+    ```
+
+    I had to install `pytest-asyncio`:
+    ```bash
+    uv add --dev pytest-asyncio
+    uv sync
+    ```
+
+    Configure `pytest` in `pyproject.toml`:
+    ```yaml
+    [tool.pytest.ini_options]
+    asyncio_mode = "auto"
+    ```
+
+
+2. RuntimeError: Cannot call `raise_for_status` as the request instance has not been set on this response.
+    In the test code, `httpx` expects the `Response` to be associated with a `Request`. A manually constructed response doesn't have one, so httpx raises this error.
+
+    ```python
+    request = httpx.Request(
+        "GET",
+        "https://api.themoviedb.org/3/search/movie",
+    )
+
+    response = httpx.Response(
+        status_code=200,
+        request=request, <--
+        json={
+            "page": 1,
+            "results": [
+                {
+                    "id": 603,
+                    "title": "The Matrix",
+                }
+            ],
+            "total_pages": 1,
+            "total_results": 1,
+        },
+    )
+    ```
+
+
+### 7. Test a TMDB error
+Add the following code to `tests/test_tmdb.py`:
+```python
+import pytest
+
+async def test_search_movies_raises_for_http_error() -> None:
+    request = httpx.Request(
+        "GET",
+        "https://api.themoviedb.org/3/search/movie",
+    )
+
+    response = httpx.Response(
+        status_code=500,
+        request=request,
+        json={"status_message": "Internal Server Error"},
+    )
+
+    http_client = AsyncMock(spec=httpx.AsyncClient)
+    http_client.get.return_value = response
+
+    settings = Settings(
+        tmdb_api_token="test-token",
+    )
+
+    client = TMDBClient(
+        settings=settings,
+        http_client=http_client,
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.search_movies("The Matrix")
+
+```
+
+### 8. Test that the token is actually used
+The client is responsible for constructing the authenticated HTTP client when one isn't injected.
+
+We can test the headers by injecting a fake client and checking that production construction is harder to test directly, but this points us toward a design improvement.
+
+Rather than writing increasingly complicated tests around the constructor, we're going to make the HTTP configuration explicit.
+
+That will lead us to a cleaner design where authentication configuration is isolated.
+
+This will be implemented later.
+
+
+### 9. Run Ruff
+
+Run the following in the terminal:
+```bash
+uv run ruff check .
+```
+
+Also, run the following:
+```bash
+uv run ruff format --check .
+```
+
+If Ruff reports formatting issues, you can fix them with the following command:
+```bash
+uv run ruff format .
+```
+
+Then run the Ruff check again.
+
+
+### 10. Run coverage
+
+Finally:
+```bash
+uv run coverage run -m pytest
+uv run coverage report
+```
+

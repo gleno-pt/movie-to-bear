@@ -14,11 +14,7 @@ def test_health() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
-    health_logs = [
-        log
-        for log in logs
-        if log["event"] == "health_check"
-    ]
+    health_logs = [log for log in logs if log["event"] == "health_check"]
 
     assert len(health_logs) == 1
     assert health_logs[0]["status"] == "ok"
