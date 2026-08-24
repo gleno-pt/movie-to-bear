@@ -1,4 +1,9 @@
 from movie_to_bear.clients.tmdb import TMDBClient
+from movie_to_bear.models.media import (
+    Media,
+    MediaSearchResponse,
+    MediaType,
+)
 from movie_to_bear.models.tmdb import MovieSearchResponse
 
 
@@ -9,7 +14,24 @@ class TMDBService:
     async def search_movies(
         self,
         query: str,
-    ) -> MovieSearchResponse:
+    ) -> MediaSearchResponse:
         response = await self._client.search_movies(query)
 
-        return MovieSearchResponse.model_validate(response)
+        tmdb_response = MovieSearchResponse.model_validate(response)
+
+        return MediaSearchResponse(
+            page=tmdb_response.page,
+            results=[
+                Media(
+                    id=movie.id,
+                    media_type=MediaType.MOVIE,
+                    title=movie.title,
+                    overview=movie.overview,
+                    release_date=movie.release_date,
+                    poster_path=movie.poster_path,
+                )
+                for movie in tmdb_response.results
+            ],
+            total_pages=tmdb_response.total_pages,
+            total_results=tmdb_response.total_results,
+        )

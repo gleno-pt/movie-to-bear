@@ -1,10 +1,12 @@
-from datetime import date
-
 from fastapi.testclient import TestClient
 
 from movie_to_bear.api.dependencies import get_tmdb_service
 from movie_to_bear.main import app
-from movie_to_bear.models.tmdb import MovieSearchResponse, MovieSearchResult
+from movie_to_bear.models.media import (
+    Media,
+    MediaSearchResponse,
+    MediaType,
+)
 
 
 def test_search_movies() -> None:
@@ -12,13 +14,14 @@ def test_search_movies() -> None:
         async def search_movies(self, query: str):
             assert query == "The Matrix"
 
-            return MovieSearchResponse(
+            fake_response = MediaSearchResponse(
                 page=1,
                 results=[
-                    MovieSearchResult(
+                    Media(
                         id=603,
+                        media_type=MediaType.MOVIE,
                         title="The Matrix",
-                        release_date=date(1999, 3, 30),
+                        release_date="1999-03-30",
                         overview="A computer hacker...",
                         poster_path="/poster.jpg",
                     )
@@ -26,6 +29,7 @@ def test_search_movies() -> None:
                 total_pages=1,
                 total_results=1,
             )
+            return fake_response
 
     fake_service = FakeTMDBService()
     app.dependency_overrides[get_tmdb_service] = lambda: fake_service

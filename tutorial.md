@@ -1617,3 +1617,188 @@ uv run pytest
 
     app.dependency_overrides[get_tmdb_service] = lambda: fake_service
     ```
+
+## Lesson 8 — Introduce a media domain model
+
+The key design decision is:
+
+> TMDB is an external data source. Our application should not make its internal model depend completely on TMDB's JSON structure.
+
+### 1. The problem with our current model
+
+The current model `MovieSearchResult.py` works from movies. However, it will not work for TV series. We would have to translate TV series data somewhere.   
+This is what the service layer is for.
+
+### 2. Create a domain model
+
+Create `src/movie_to_bear/models/media.py` with the following content:
+```python
+from datetime import date
+from enum import StrEnum
+
+from pydantic import BaseModel
+
+
+class MediaType(StrEnum):
+    MOVIE = "movie"
+    TV = "tv"
+
+
+class Media(BaseModel):
+    id: int
+    media_type: MediaType
+    title: str
+    overview: str | None = None
+    release_date: date | None = None
+    poster_path: str | None = None
+```
+
+
+### 3. Why use `StrEnum`?
+
+`StrEnum` gives us string-like enum values.   
+This works nicely with JSON APIs and Pydantic.
+
+### 4. Keep the TMDB models
+
+We now have two different concepts:
+```text
+models/
+├── media.py
+└── tmdb.py
+```
+
+TMDB models are external representations 
+Media model is internal representation.
+
+### 5. Update the service
+
+Change the service to translate the TMDB result into our domain model.   
+
+Add the following content to `src/movie_to_bear/models/media.py`:
+```python
+class MediaSearchResponse(BaseModel):
+    page: int
+    results: list[Media]
+    total_pages: int
+    total_results: int
+```
+### 6. Translate TMDB → domain
+
+Update `services/tmdb.py`:
+```python
+from movie_to_bear.clients.tmdb import TMDBClient
+from movie_to_bear.models.media import (
+    Media,
+    MediaSearchResponse,
+    MediaType,
+)
+from movie_to_bear.models.tmdb import MovieSearchResponse
+
+
+class TMDBService:
+    def __init__(self, client: TMDBClient) -> None:
+        self._client = client
+
+    async def search_movies(
+        self,
+        query: str,
+    ) -> MediaSearchResponse:
+        response = await self._client.search_movies(query)
+
+        tmdb_response = MovieSearchResponse.model_validate(response)
+
+        return MediaSearchResponse(
+            page=tmdb_response.page,
+            results=[
+                Media(
+                    id=movie.id,
+                    media_type=MediaType.MOVIE,
+                    title=movie.title,
+                    overview=movie.overview,
+                    release_date=movie.release_date,
+                    poster_path=movie.poster_path,
+                )
+                for movie in tmdb_response.results
+            ],
+            total_pages=tmdb_response.total_pages,
+            total_results=tmdb_response.total_results,
+        )
+```
+
+### 7. Update the API response model
+
+The route currently says:
+```python
+response_model = MovieSearchResponse
+```
+Change that to:
+```python
+response_model = MediaSearchResponse
+```
+and update the return type:
+```python
+async def search_movies(
+    query: str = Query(min_length=1),
+    service: TMDBService = Depends(get_tmdb_service),
+) -> MediaSearchResponse:
+    return await service.search_movies(query)
+``` 
+Now the public API exposes our model, not TMDB's model.
+
+### 8. Update the service test
+
+Change `tests/test_tmdb_service.py` with the following: 
+```python
+from movie_to_bear.models.media import MediaSearchResponse, MediaType
+
+
+result = await service.search_movies("The Matrix")
+
+assert isinstance(result, MediaSearchResponse)
+assert result.page == 1
+assert result.results[0].id == 603
+assert result.results[0].title == "The Matrix"
+assert result.results[0].media_type == MediaType.MOVIE
+assert result.results[0].release_date is not None
+assert result.results[0].release_date.year == 1999
+```
+
+We're now testing something meaningful:
+
+> Does the service correctly translate TMDB data into our application's media model?
+
+### 9. Update the API test
+
+Update the fake service with the following:
+```python
+from movie_to_bear.models.media import (
+    Media,
+    MediaSearchResponse,
+    MediaType,
+)
+
+fake_response = MediaSearchResponse(
+    page=1,
+    results=[
+        Media(
+            id=603,
+            media_type=MediaType.MOVIE,
+            title="The Matrix",
+            release_date="1999-03-30",
+            overview="A computer hacker...",
+            poster_path="/poster.jpg",
+        )
+    ],
+    total_pages=1,
+    total_results=1,
+)
+return fake_response
+```
+### 10. Run everything
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run coverage run -m pytest
+uv run coverage report
+```

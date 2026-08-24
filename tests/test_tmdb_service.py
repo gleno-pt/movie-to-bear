@@ -1,6 +1,6 @@
 from unittest.mock import AsyncMock
 
-from movie_to_bear.models.tmdb import MovieSearchResponse
+from movie_to_bear.models.media import MediaSearchResponse, MediaType
 from movie_to_bear.services.tmdb import TMDBService
 
 
@@ -26,10 +26,11 @@ async def test_search_movies() -> None:
 
     result = await service.search_movies("The Matrix")
 
-    assert isinstance(result, MovieSearchResponse)
+    assert isinstance(result, MediaSearchResponse)
     assert result.page == 1
     assert result.results[0].id == 603
     assert result.results[0].title == "The Matrix"
+    assert result.results[0].media_type == MediaType.MOVIE
     assert result.results[0].release_date is not None
     assert result.results[0].release_date.year == 1999
 
