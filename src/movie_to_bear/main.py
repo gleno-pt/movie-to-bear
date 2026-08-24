@@ -1,6 +1,7 @@
 import structlog
 from fastapi import FastAPI
 
+from movie_to_bear.api.routes import router
 from movie_to_bear.core.logging import configure_logging
 
 
@@ -24,6 +25,7 @@ def create_app() -> FastAPI:
 
         return {"status": "ok"}
 
+    app.include_router(router)
     return app
 
 

@@ -1174,7 +1174,7 @@ The client mocked HTTP
 The service will mock the client.
 
 
-## 7. Run the tests
+### 7. Run the tests
 Run the tests: 
 ```bash
 uv run pytest
@@ -1324,3 +1324,296 @@ I'm keeping the responsibilities:
 - Pydantic model = data contract
 
 This separation gives us flexibility later.
+
+## Lesson 7 — FastAPI dependency injection
+
+### 1. Why dependency injection?
+> Use FastAPI's dependency injection system to connect all the parts of the application together
+
+We don't want the FastAPI route instantiating objects that it needs each time somebody calls the endpoint. 
+
+FastAPI can construct the dependencies.
+
+This also makes testing easier because the real dependencies can be replaced by mocks.
+
+
+
+### 2. Create an API package
+
+Create:
+```bash
+src/movie_to_bear/api/
+├── __init__.py
+└── dependencies.py
+```
+
+### 3. Create the TMDB client dependency
+Add the following content to `src/movie_to_bear/api/dependencies.py`:
+```python
+from fastapi import Depends
+
+from movie_to_bear.clients.tmdb import TMDBClient
+from movie_to_bear.core.config import Settings, settings
+from movie_to_bear.services.tmdb import TMDBService
+
+
+def get_settings() -> Settings:
+    return settings
+
+
+def get_tmdb_client(
+    app_settings: Settings = Depends(get_settings),
+) -> TMDBClient:
+    return TMDBClient(app_settings)
+
+
+def get_tmdb_service(
+    client: TMDBClient = Depends(get_tmdb_client),
+) -> TMDBService:
+    return TMDBService(client)
+```
+
+Three dependencies are created:
+1. `get_settings()`
+2. `get_tmdb_client()`
+3. `get_tmdb_service()`
+
+### 4. Why Depends()?
+
+Consider:
+```python
+def get_tmdb_service(
+    client: TMDBClient = Depends(get_tmdb_client),
+) -> TMDBService:
+```
+We're telling FastAPI:
+
+> Before calling get_tmdb_service, call get_tmdb_client and give me its result.
+
+The chain does not have to be manually constructed each time.
+
+### 5. Create the search router
+
+Create `src/movie_to_bear/api/routes.py` with the following content:
+```python
+from fastapi import APIRouter, Depends, Query
+
+from movie_to_bear.services.tmdb import TMDBService
+from movie_to_bear.api.dependencies import get_tmdb_service
+from movie_to_bear.models.tmdb import MovieSearchResponse
+
+
+router = APIRouter(
+    prefix="/api/v1",
+)
+
+
+@router.get(
+    "/search/movies",
+    response_model=MovieSearchResponse,
+)
+async def search_movies(
+    query: str = Query(min_length=1),
+    service: TMDBService = Depends(get_tmdb_service),
+) -> MovieSearchResponse:
+    return await service.search_movies(query)
+```
+
+### 6. Why `response_model`?
+
+This:
+```python
+response_model = MovieSearchResponse
+```
+is important.
+
+The service returns:
+```python
+MovieSearchResponse
+```
+and FastAPI uses the Pydantic model as the API contract.
+
+The endpoint has a defined response structure.
+
+### 7. `Query(min_length=1)`
+The query string is validated:
+```python
+query: str = Query(min_length=1)
+```
+So:
+```text
+/api/v1/search/movies?query=The%20Matrix
+```
+is valid.
+
+But:
+```text
+/api/v1/search/movies?query=
+```
+will be rejected by FastAPI with a validation error.
+
+We're deliberately putting basic HTTP validation at the A
+
+
+Basic HTTP validation is deliberately being put at the API boundary.
+
+
+### 8. Connect the router to the application
+
+Modify `src/movie_to_bear/main.py`.
+Add:
+```python
+from movie_to_bear.api.routes import router
+```
+and inside `create_app()`:
+```python
+app.include_router(router)
+```
+
+### 9. Run the application
+
+Start:
+```bash
+uv run uvicorn movie_to_bear.main:app --reload
+```
+Now open:
+```text
+http://127.0.0.1:8000/docs
+```
+You should see:
+```text
+GET /health
+GET /api/v1/search/movies
+```
+FastAPI generated the interactive API documentation automatically from our route definitions and Pydantic models.
+
+### 10. Don't test the real TMDB yet
+
+We're going to test the endpoint without the Internet.   
+This is one of the most important benefits of FastAPI dependency injection.
+
+### 11. Override the dependency in the test
+
+Create `tests/test_search.py` with the following content:
+```python
+from datetime import date
+
+from fastapi.testclient import TestClient
+
+from movie_to_bear.api.dependencies import get_tmdb_service
+from movie_to_bear.main import app
+from movie_to_bear.models.tmdb import MovieSearchResponse, MovieSearchResult
+
+
+def test_search_movies() -> None:
+    class FakeTMDBService:
+        async def search_movies(self, query: str):
+            assert query == "The Matrix"
+
+            return MovieSearchResponse(
+                page=1,
+                results=[
+                    MovieSearchResult(
+                        id=603,
+                        title="The Matrix",
+                        release_date=date(1999, 3, 30),
+                        overview="A computer hacker...",
+                        poster_path="/poster.jpg",
+                    )
+                ],
+                total_pages=1,
+                total_results=1,
+            )
+
+    fake_service = FakeTMDBService()
+    app.dependency_overrides[get_tmdb_service] = lambda: fake_service
+
+    try:
+        client = TestClient(app)
+
+        response = client.get(
+            "/api/v1/search/movies",
+            params={"query": "The Matrix"},
+        )
+
+        assert response.status_code == 200
+
+        data = response.json()
+
+        assert data["page"] == 1
+        assert data["results"][0]["id"] == 603
+        assert data["results"][0]["title"] == "The Matrix"
+
+    finally:
+        app.dependency_overrides.clear()
+```
+### 12. FastAPI dependency overrides
+```python
+app.dependency_overrides[get_tmdb_service] = FakeTMDBService()
+```
+This tells FastAPI:
+
+> Whenever the application asks for get_tmdb_service, give it this fake service instead.
+
+### 13. Why try/finally?
+
+This is important:
+```python
+try:
+    ...
+finally:
+    app.dependency_overrides.clear()
+```
+Dependency overrides are stored on the FastAPI application object.
+
+If we forget to clear them, another test could accidentally inherit the override.
+
+That creates extremely confusing test failures.
+
+We'll improve this later with a pytest fixture so we don't have to repeat the cleanup manually.
+
+For now, I want you to see what FastAPI is actually doing.
+
+14. Run the tests
+
+Now:
+```bash
+uv run pytest
+```
+
+#### Issue
+1. When running: `uv run ruff check .`, the following error occurs:
+    ```bash
+    B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+    --> src/movie_to_bear/api/dependencies.py:13:30
+    |
+    12 | def get_tmdb_client(
+    13 |     app_settings: Settings = Depends(get_settings),
+    |                              ^^^^^^^^^^^^^^^^^^^^^
+    14 | ) -> TMDBClient:
+    15 |     return TMDBClient(app_settings)
+    ```
+
+    This is a **Ruff/flake8-bugbear (B008)** issue, and in this case Ruff is flagging a pattern that is actually idiomatic FastAPI.
+
+    To fix this, configure Ruff to allow `Depends` calls in defaults.   
+    Add the following to `pyproject.toml`:
+
+    ```yaml
+    [tool.ruff.lint]
+    extend-ignore = ["B008"]
+    ```
+2. FAILED tests/test_search.py::test_search_movies - TypeError: <tests.test_search.test_search_movies.<locals>.FakeTMDBService object at 0x75b3548ee7e0> is not a callable object
+
+    FastAPI expects the override to be a callable — normally a function — but we're giving it an instance.
+
+    Change `tests/test_search.py` from:
+    ```python
+    app.dependency_overrides[get_tmdb_service] = FakeTMDBService()
+    ```
+    to:
+    ```python
+    fake_service = FakeTMDBService()
+
+    app.dependency_overrides[get_tmdb_service] = lambda: fake_service
+    ```
