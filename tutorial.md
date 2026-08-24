@@ -174,7 +174,6 @@ app = FastAPI(
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
-
 ```
 
 ### 5. Run the application
@@ -306,6 +305,7 @@ uv run python
 In the REPL: 
 ```python
 from movie_to_bear.core.config import settings
+
 print(settings.tmdb_api_token)
 ```
 
@@ -413,7 +413,6 @@ def configure_logging() -> None:
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-
 ```
 
 ### 3. Refactor `main.py`
@@ -476,7 +475,6 @@ logger.info(
     "health_check",
     status="ok",
 )
-
 ```
 The processes add `logger`, `level` and `timestamp`.
 
@@ -485,9 +483,7 @@ We don't construct the JSON ourselves.
 
 Don't do this:
 ```python
-logger.info(
-    '{"event": "health_check", "status": "ok"}'
-)
+logger.info('{"event": "health_check", "status": "ok"}')
 ```
 
 ### 6. Add a meaningful field
@@ -530,16 +526,11 @@ def test_health() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
-    health_logs = [
-        log
-        for log in logs
-        if log["event"] == "health_check"
-    ]
+    health_logs = [log for log in logs if log["event"] == "health_check"]
 
     assert len(health_logs) == 1
     assert health_logs[0]["status"] == "ok"
     assert health_logs[0]["component"] == "api"
-
 ```
 
 We're not asserting:
@@ -665,7 +656,7 @@ creates a reuseable async HTTP client.
 
 We're configuring:
 ```python
-base_url=self._base_url
+base_url = self._base_url
 ```
 so later we can write:
 ```python
@@ -675,7 +666,7 @@ await self._client.get("/search/movie")
 ### 7. Authentication
 This:
 ```python
-headers={
+headers = {
     "Authorization": f"Bearer {settings.tmdb_api_token}",
     "Accept": "application/json",
 }
@@ -930,7 +921,6 @@ response = httpx.Response(
     status_code=200,
     json={...},
 )
-
 ```
 No actual request occurs.
 
@@ -1007,6 +997,7 @@ Add the following code to `tests/test_tmdb.py`:
 ```python
 import pytest
 
+
 async def test_search_movies_raises_for_http_error() -> None:
     request = httpx.Request(
         "GET",
@@ -1033,7 +1024,6 @@ async def test_search_movies_raises_for_http_error() -> None:
 
     with pytest.raises(httpx.HTTPStatusError):
         await client.search_movies("The Matrix")
-
 ```
 
 ### 8. Test that the token is actually used
@@ -1122,10 +1112,10 @@ Put this into `src/movie_to_bear/services/tmdb.py`:
 ```python
 from movie_to_bear.clients.tmdb import TMDBClient
 
+
 class TMDBService:
     def __init__(self, client: TMDBClient) -> None:
         self._client = client
-
 
     async def search_movies(self, query: str) -> dict:
         return await self._client.search_movies(query)
@@ -1190,4 +1180,147 @@ Run the tests:
 uv run pytest
 ```
 
+### 8. Introducing Pydantic models
 
+Create:
+```bash
+src/movie_to_bear/models/
+├── __init__.py
+└── tmdb.py
+```
+
+Add the following to `src/movie_to_bear/models/tmdb.py`:
+```python
+from datetime import date
+
+from pydantic import BaseModel
+
+
+class MovieSearchResult(BaseModel):
+    id: int
+    title: str
+    release_date: date | None = None
+    overview: str | None = None
+    poster_path: str | None = None
+```
+
+Also add:
+```python
+class MovieSearchResponse(BaseModel):
+    page: int
+    results: list[MovieSearchResult]
+    total_pages: int
+    total_results: int
+```
+
+
+### 9. Why Pydantic belongs here
+
+Suppose TMDB returns:
+```json
+{
+  "id": 603,
+  "title": "The Matrix",
+  "release_date": "1999-03-30"
+}
+```
+Pydantic converts:
+```text
+"1999-03-30"
+```
+into:
+```python
+date(1999, 3, 30)
+```
+So our application isn't passing raw JSON strings around.
+
+This becomes particularly valuable when we eventually create the Bear representation.
+
+### 10. Modify the service
+
+Change:
+```python
+async def search_movies(self, query: str) -> dict:
+    return await self._client.search_movies(query)
+```
+to:
+```python
+from movie_to_bear.clients.tmdb import TMDBClient
+from movie_to_bear.models.tmdb import MovieSearchResponse
+
+
+class TMDBService:
+    def __init__(self, client: TMDBClient) -> None:
+        self._client = client
+
+    async def search_movies(
+        self,
+        query: str,
+    ) -> MovieSearchResponse:
+        response = await self._client.search_movies(query)
+
+        return MovieSearchResponse.model_validate(response)
+```
+
+This is the beginning of our **domain boundary**.
+
+
+### 11. Update the service test
+
+Change the `` to:
+```python
+from unittest.mock import AsyncMock
+
+from movie_to_bear.models.tmdb import MovieSearchResponse
+from movie_to_bear.services.tmdb import TMDBService
+
+
+async def test_search_movies() -> None:
+    client = AsyncMock()
+
+    client.search_movies.return_value = {
+        "page": 1,
+        "results": [
+            {
+                "id": 603,
+                "title": "The Matrix",
+                "release_date": "1999-03-30",
+                "overview": "A computer hacker learns...",
+                "poster_path": "/poster.jpg",
+            }
+        ],
+        "total_pages": 1,
+        "total_results": 1,
+    }
+
+    service = TMDBService(client)
+
+    result = await service.search_movies("The Matrix")
+
+    assert isinstance(result, MovieSearchResponse)
+    assert result.page == 1
+    assert result.results[0].id == 603
+    assert result.results[0].title == "The Matrix"
+    assert result.results[0].release_date is not None
+    assert result.results[0].release_date.year == 1999
+
+    client.search_movies.assert_awaited_once_with("The Matrix")
+```
+
+### 12. One deliberate simplification
+
+You might notice that we're calling:
+```python
+MovieSearchResponse.model_validate(response)
+```
+rather than having the HTTP client return a Pydantic model.
+
+That's deliberate.
+
+I'm keeping the responsibilities:
+
+- TMDBClient = HTTP communication
+- TMDBService = application interpretation
+- Pydantic model = data contract
+
+This separation gives us flexibility later.
