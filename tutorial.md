@@ -2050,3 +2050,383 @@ We have two endpoints:
 - tv
 
 We want to allow the user to search for a title, and not be bothered with weather it is a movie or a tv series.
+
+
+## Lesson 10 — FastAPI lifespan and resource management
+
+### 1. Why not create the client inside the endpoint?
+
+An AsyncClient maintains connection pooling.    
+We do not want to create and close a new HTTP client for every request.   
+Instead, we want one application-level client that can be reused.
+
+### 2. Create an application state object
+Create `src/movie_to_bear/core/state.py`:
+```python
+import httpx
+
+from movie_to_bear.clients.tmdb import TMDBClient
+from movie_to_bear.core.config import Settings
+
+
+class AppState:
+    def __init__(self, settings: Settings) -> None:
+        self.http_client = httpx.AsyncClient(
+            base_url="https://api.themoviedb.org/3",
+            headers={
+                "Authorization": f"Bearer {settings.tmdb_api_token}",
+                "accept": "application/json",
+            },
+        )
+
+        self.tmdb_client = TMDBClient(
+            settings=settings,
+            http_client=self.http_client,
+        )
+
+    async def close(self) -> None:
+        await self.http_client.aclose()
+```
+
+The important part is that `AppState` owns the HTTP client.
+
+### 3. Use FastAPI lifespan
+
+Modify `src/movie_to_bear/main.py`:
+```python
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from movie_to_bear.core.config import settings
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.app_state = AppState(settings)
+
+    yield
+
+    await app.state.app_state.close()
+
+
+def create_app() -> FastAPI:
+    configure_logging()
+
+    app = FastAPI(
+        title="Movie to Bear",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+
+    ...
+```
+The key concept is:
+```text
+before yield
+    startup
+
+
+yield
+    application runs
+
+
+after yield
+    shutdown
+```
+So:
+```python
+app.state.app_state = AppState(settings)
+```
+runs when the application starts.
+
+And:
+```python
+await app.state.app_state.close()
+```
+runs when it shuts down.
+
+
+### 4. Get the TMDB client from application state
+The client does not need to constructed here.   
+Change `src/movie_to_bear/api/dependencies.py`:
+```python
+from fastapi import Depends, Request
+
+from movie_to_bear.clients.tmdb import TMDBClient
+from movie_to_bear.services.tmdb import TMDBService
+
+
+def get_tmdb_client(request: Request) -> TMDBClient:
+    return request.app.state.app_state.tmdb_client
+
+
+def get_tmdb_service(
+    client: TMDBClient = Depends(get_tmdb_client),
+) -> TMDBService:
+    return TMDBService(client)
+```
+
+
+### 5. The dependency graph is now cleaner
+
+### 6. What happens during application startup?
+When you run `uv run uvicorn movie_to_bear.main:app --reload`, FastAPI start the lifespan.
+It executes:  
+```python
+app.state.app_state = AppState(settings)
+```
+which creates:
+```text
+AppState
+   ├── AsyncClient
+   └── TMDBClient
+```
+Then the application starts accepting requests.
+
+
+### 7. What happens during shutdown?
+When `uvicorn` shuts the application down:
+```python
+await app.state.app_state.close()
+```
+runs.
+
+This calls:
+```python
+await self.http_client.aclose()
+```
+The connection pool is properly released.
+
+### 8. Test the lifespan
+This should be explicitly tested.
+Create `tests/test_lifespan.py` with the following content:
+```python
+from fastapi.testclient import TestClient
+
+from movie_to_bear.main import app
+
+
+def test_application_lifespan() -> None:
+    with TestClient(app):
+        assert hasattr(app.state, "app_state")
+
+        assert app.state.app_state.tmdb_client is not None
+        assert app.state.app_state.http_client is not None
+```
+
+The context manager causes the FastAPI lifespan to execute: `with TestClient(app):`
+
+### 9. One problem with our current tests
+
+### 10. Test the shutdown
+Increase the strength of the lifecycle test:
+```python
+def test_application_lifespan() -> None:
+    with TestClient(app):
+        http_client = app.state.app_state.http_client
+
+        assert not http_client.is_closed
+
+    assert http_client.is_closed
+```
+
+
+### 11. Run the tests
+
+
+
+#### Issue
+Received the following issue running the tests:
+```
+    def test_application_lifespan() -> None:
+        with TestClient(app):
+>           assert hasattr(app.state, "app_state")
+E           AssertionError: assert False
+E            +  where False = hasattr(<starlette.datastructures.State object at 0x7d1b878a4800>, 'app_state')
+E            +    where <starlette.datastructures.State object at 0x7d1b878a4800> = app.state
+
+tests/test_lifespan.py:8: AssertionError
+``` 
+
+The wrong state object is being checked.  
+`TestClient` runs the app's lifespan use its own application lifecycle context.   
+Starlette provides a lifespan state mechanism rather than requiring us to mutate `app.state`directly.
+
+### 12. One important correction to our architecture
+
+```mermaid
+
+flowchart TD
+    app[FastAPI]
+    -->routes[API Routes]
+    -->tmdb_svc[TMDB Service]
+    --> tmdb_client[TMDB Client]
+    -->http_client[HTTP client]
+    -->tmdb[TMDB]
+
+```
+
+### 13 Why this matters for Bear
+
+Bear is another external integration:
+```mermaid
+
+flowchart TD
+    app[Application]
+    tmdb_svc[TMDB Service]
+    --> tmdb_client[TMDB Client]
+    -->tmdb[TMDB]
+
+    bear_svc[Bear Service]
+    -->bear_client[Bear Client]
+    -->bear[Bear]
+
+    app --> tmdb_svc
+    app --> bear_svc
+```
+The application state could look like the following:
+```text
+AppState
+├── http_client
+├── tmdb_client
+└── ...
+```
+## Issue
+
+1. AssertionError 
+    ```bash
+    def test_application_lifespan() -> None: 
+        with TestClient(app): 
+        > assert hasattr(app.state, "app_state") 
+        E AssertionError: assert False 
+        E + where False = hasattr(<starlette.datastructures.State object at 0x7d1b878a4800>, 'app_state') 
+        E + where <starlette.datastructures.State object at 0x7d1b878a4800> = app.state 
+        
+        tests/test_lifespan.py:8: AssertionError
+    ```
+    This is due to checking the incorrect state object.   
+    `TestClient`runs the application lifespan using its own application lifecycle context.    
+    Starlette provides a lifespan state mechanism, it is not necessary to mutate `app.state` directly.
+
+    Change `main.py`:
+    ```python
+    from contextlib import asynccontextmanager
+    from collections.abc import AsyncIterator
+
+    import structlog
+    from fastapi import FastAPI
+
+    from movie_to_bear.api.routes import router
+    from movie_to_bear.core.config import settings
+    from movie_to_bear.core.logging import configure_logging
+    from movie_to_bear.core.state import AppState
+
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app_state = AppState(settings)  <--
+
+        try:                            <--
+            yield {                     <--
+                "app_state": app_state, <--
+            }                           <--
+        finally:                        <--
+            await app_state.close()
+
+
+    def create_app() -> FastAPI:
+        configure_logging()
+
+        app = FastAPI(
+            title="Movie to Bear",
+            version="0.1.0",
+            lifespan=lifespan,
+        )
+
+        ...
+
+
+    ```
+    Change `src/movie_to_bear/api/dependencies.py`:
+    ```python
+    from fastapi import Depends, Request
+
+    from movie_to_bear.clients.tmdb import TMDBClient
+    from movie_to_bear.services.tmdb import TMDBService
+
+
+    def get_tmdb_client(request: Request) -> TMDBClient:
+        return request.state.app_state.tmdb_client <--
+
+
+    def get_tmdb_service(
+        client: TMDBClient = Depends(get_tmdb_client),
+    ) -> TMDBService:
+        return TMDBService(client)
+
+    ```
+
+    Change `tests/test_lifespan.py` to:
+    ```python
+    from fastapi.testclient import TestClient
+
+    from movie_to_bear.main import app
+
+
+    def test_application_lifespan() -> None:
+        with TestClient(app) as client:
+            response = client.get("/health")
+
+            assert response.status_code == 200
+    ```
+2. Return type of async generator function must be compatible with "AsyncGenerator[dict[str, AppState], Any]" in main.py ln 17, col 15
+
+    This was a typing issue.   
+    The relevant changes to `main.py` should be:
+    ```python
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    import structlog
+    from fastapi import FastAPI
+
+    from movie_to_bear.api.routes import router
+    from movie_to_bear.core.config import settings
+    from movie_to_bear.core.logging import configure_logging
+    from movie_to_bear.core.state import AppState
+
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[dict[str, AppState]]:
+        app_state = AppState(settings)
+
+        try:
+            yield {
+                "app_state": app_state,
+            }
+        finally:
+            await app_state.close()
+
+    ```
+
+3. The function "asynccontextmanager" is deprecated   Annotating the return type as -> AsyncIterator[Foo] with @asynccontextmanager is deprecated. Use -> AsyncGenerator[Foo] instead.
+
+    Change `main.py` so the complete lifespan is:
+    ```python
+    from collections.abc import AsyncGenerator
+    from contextlib import asynccontextmanager
+
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[dict[str, AppState], None]:
+        app_state = AppState(settings)
+
+        try:
+            yield {
+                "app_state": app_state,
+            }
+        finally:
+            await app_state.close()
+
+    ```
