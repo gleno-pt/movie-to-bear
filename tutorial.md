@@ -2608,3 +2608,182 @@ async def search(
 ```
 
 ### 6. Run the tests
+
+
+## Lesson 12 — Design the Bear export
+
+### 1. First, define what we want to export
+
+A sensible first Bear note might look like the following:
+```markdown
+# The Matrix
+
+**Type:** Movie
+**Release date:** 30 March 1999
+**TMDB ID:** 603
+
+## Overview
+
+A computer hacker discovers...
+```
+
+### 2. Don't put Bear formatting into Media
+
+`Media` represents our application's media data.    
+It shouldn't know that we're exporting to Bear.   
+In the future, we may need to export to other formats or apps.
+
+
+### 3. Create an exporter package
+
+Create:
+```text
+src/movie_to_bear/exporters/
+├── __init__.py
+└── bear.py
+
+```
+
+Then add the following content to `src/movie_to_bear/exporters/bear.py`:
+```python
+from movie_to_bear.models.media import Media
+
+
+class BearExporter:
+    def export(self, media: Media) -> str: ...
+```
+The exporter generates the representation.   
+A separate component can eventually handle the file.
+
+### 4. Define the output format
+```python
+from movie_to_bear.models.media import Media, MediaType
+
+
+class BearExporter:
+    def export(self, media: Media) -> str:
+        lines = [
+            f"# {media.title}",
+            "",
+            f"**Type:** {self._media_type(media)}",
+        ]
+
+        if media.release_date:
+            lines.append(f"**Release date:** {media.release_date.strftime('%d %B %Y')}")
+
+        lines.extend(
+            [
+                f"**TMDB ID:** {media.id}",
+                "",
+            ]
+        )
+
+        if media.overview:
+            lines.extend(
+                [
+                    "## Overview",
+                    "",
+                    media.overview,
+                    "",
+                ]
+            )
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _media_type(media: Media) -> str:
+        if media.media_type == MediaType.MOVIE:
+            return "Movie"
+
+        return "TV Show"
+```
+### 5. Let's look at the result
+
+Given:
+```python 
+Media(
+    id=603,
+    media_type=MediaType.MOVIE,
+    title="The Matrix",
+    release_date="1999-03-30",
+    overview="A computer hacker...",
+)
+````
+the exporter produces:
+```markdown
+# The Matrix
+
+**Type:** Movie
+**Release date:** 30 March 1999
+**TMDB ID:** 603
+
+## Overview
+
+A computer hacker...
+```
+
+The important thing is that the exporter knows nothing about:
+- TMDB API
+- TMDB URLs
+- TMDB JSON
+- HTTP
+- FastAPI
+
+It only knows:
+- Media
+
+
+### 6. Test the exporter
+
+Create `tests/test_bear_exporter.py` with the follwoing content: 
+```python
+from movie_to_bear.exporters.bear import BearExporter
+from movie_to_bear.models.media import Media, MediaType
+
+
+def test_export_movie() -> None:
+    media = Media(
+        id=603,
+        media_type=MediaType.MOVIE,
+        title="The Matrix",
+        release_date="1999-03-30",
+        overview="A computer hacker...",
+    )
+
+    exporter = BearExporter()
+
+    result = exporter.export(media)
+
+    assert "# The Matrix" in result
+    assert "**Type:** Movie" in result
+    assert "**Release date:** 30 March 1999" in result
+    assert "**TMDB ID:** 603" in result
+    assert "## Overview" in result
+    assert "A computer hacker..." in result
+
+
+def test_export_tv_show() -> None:
+    media = Media(
+        id=1399,
+        media_type=MediaType.TV,
+        title="Game of Thrones",
+        release_date="2011-04-17",
+        overview="Seven noble families...",
+    )
+
+    exporter = BearExporter()
+
+    result = exporter.export(media)
+
+    assert "# Game of Thrones" in result
+    assert "**Type:** TV Show" in result
+    assert "**Release date:** 17 April 2011" in result
+    assert "**TMDB ID:** 1399" in result
+```
+
+### 7. Why these tests are valuable
+
+This is a pure unit test.
+It's fast and deterministic.
+
+### 8. Run the checks
