@@ -17,6 +17,13 @@ class Media(BaseModel):
     release_date: date | None = None
     poster_path: str | None = None
 
+    @property
+    def tmdb_url(self) -> str:
+        if self.media_type == MediaType.MOVIE:
+            return f"https://www.themoviedb.org/movie/{self.id}"
+
+        return f"https://www.themoviedb.org/tv/{self.id}"
+
 
 class MediaSearchResponse(BaseModel):
     page: int

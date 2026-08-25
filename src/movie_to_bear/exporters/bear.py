@@ -6,6 +6,8 @@ class BearExporter:
         lines = [
             f"# {media.title}",
             "",
+            self._tag(media),
+            "",
             f"**Type:** {self._media_type(media)}",
         ]
 
@@ -15,6 +17,7 @@ class BearExporter:
         lines.extend(
             [
                 f"**TMDB ID:** {media.id}",
+                f"[View on TMDB]({media.tmdb_url})",
                 "",
             ]
         )
@@ -37,3 +40,10 @@ class BearExporter:
             return "Movie"
 
         return "TV Show"
+
+    @staticmethod
+    def _tag(media: Media) -> str:
+        if media.media_type == MediaType.MOVIE:
+            return "#movies"
+
+        return "#tv"

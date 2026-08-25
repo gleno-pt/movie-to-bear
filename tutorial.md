@@ -2787,3 +2787,167 @@ This is a pure unit test.
 It's fast and deterministic.
 
 ### 8. Run the checks
+
+## Lesson 13 — Build the Bear Markdown exporter properly
+
+
+### 1. Add a TMDB link
+```markdown
+# The Matrix
+
+**Type:** Movie  
+**Release date:** 30 March 1999  
+**TMDB ID:** 603  
+
+[View on TMDB](https://www.themoviedb.org/movie/603)
+
+## Overview
+
+A computer hacker...
+```
+The exported note should contain a useful link back to TMDB.
+TMDB's URL structure is predictable from the media type and ID.
+
+Let's put the responsibility of constructing the link back in the Media model.
+
+Add the following to `src/movie_to_bear/models/media.py`:
+```python
+@property
+def tmdb_url(self) -> str:
+    if self.media_type == MediaType.MOVIE:
+        return f"https://www.themoviedb.org/movie/{self.id}"
+
+    return f"https://www.themoviedb.org/tv/{self.id}"
+```
+
+### 2. Add tags
+Bear's Markdown supports tags, and tags are useful for organizing the imported notes. Bear also supports tags through its X-Callback-URL API.
+
+Add a method to `src/movie_to_bear/exporters/bear.py`:
+```python
+@staticmethod
+def _tag(media: Media) -> str:
+    if media.media_type == MediaType.MOVIE:
+        return "#movies"
+
+    return "#tv"
+```
+### 3. Update the exporter
+
+Update `src/movie_to_bear/exporters/bear.py` to the following:
+```python
+from movie_to_bear.models.media import Media, MediaType
+
+
+class BearExporter:
+    def export(self, media: Media) -> str:
+        lines = [
+            f"# {media.title}",
+            "",
+            self._tag(media),
+            "",
+            f"**Type:** {self._media_type(media)}",
+        ]
+
+        if media.release_date:
+            lines.append(f"**Release date:** {media.release_date.strftime('%d %B %Y')}")
+
+        lines.extend(
+            [
+                f"**TMDB ID:** {media.id}",
+                f"[View on TMDB]({media.tmdb_url})",
+                "",
+            ]
+        )
+
+        if media.overview:
+            lines.extend(
+                [
+                    "## Overview",
+                    "",
+                    media.overview,
+                    "",
+                ]
+            )
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _media_type(media: Media) -> str:
+        if media.media_type == MediaType.MOVIE:
+            return "Movie"
+
+        return "TV Show"
+
+    @staticmethod
+    def _tag(media: Media) -> str:
+        if media.media_type == MediaType.MOVIE:
+            return "#movies"
+
+        return "#tv"
+```
+
+
+
+### 4. Test the Markdown
+
+Update the movie test in `tests/test_bear_exporter.py`:
+```python
+def test_export_movie() -> None:
+    media = Media(
+        id=603,
+        media_type=MediaType.MOVIE,
+        title="The Matrix",
+        release_date=date(1999, 3, 30),
+        overview="A computer hacker...",
+    )
+
+    exporter = BearExporter()
+
+    result = exporter.export(media)
+
+    assert "# The Matrix" in result
+    assert "#movies" in result
+    assert "**Type:** Movie" in result
+    assert "**Release date:** 30 March 1999" in result
+    assert "**TMDB ID:** 603" in result
+    assert "[View on TMDB]" in result
+    assert "https://www.themoviedb.org/movie/603" in result
+```
+And the TV test:
+```python
+def test_export_tv_show() -> None:
+    media = Media(
+        id=1399,
+        media_type=MediaType.TV,
+        title="Game of Thrones",
+        release_date=date(2011, 4, 17),
+        overview="Seven noble families...",
+    )
+
+    exporter = BearExporter()
+
+    result = exporter.export(media)
+
+    assert "# Game of Thrones" in result
+    assert "#tv" in result
+    assert "**Type:** TV Show" in result
+    assert "https://www.themoviedb.org/tv/1399" in result
+```
+
+### 5. One important design improvement
+
+Instead of return a Markdown string, use a BearNote class.
+The Bear X-Callback-URL API has separate concepts for `title`, `text`, and `tags` rather than a massive Markdown string. 
+
+### 6. So let's make that change now
+Create `src/movie_to_bear/models/bear.py` with the following content:
+```python
+from pydantic import BaseModel
+
+
+class BearNote(BaseModel):
+    title: str
+    text: str
+    tags: list[str]
+```
