@@ -1,14 +1,12 @@
+from movie_to_bear.models.bear import BearNote
 from movie_to_bear.models.media import Media, MediaType
 
 
 class BearExporter:
-    def export(self, media: Media) -> str:
+    def export(self, media: Media) -> BearNote:
         lines = [
-            f"# {media.title}",
-            "",
-            self._tag(media),
-            "",
             f"**Type:** {self._media_type(media)}",
+            "",
         ]
 
         if media.release_date:
@@ -28,11 +26,14 @@ class BearExporter:
                     "## Overview",
                     "",
                     media.overview,
-                    "",
                 ]
             )
 
-        return "\n".join(lines)
+        return BearNote(
+            title=media.title,
+            text="\n".join(lines),
+            tags=[self._tag(media)],
+        )
 
     @staticmethod
     def _media_type(media: Media) -> str:
@@ -44,6 +45,6 @@ class BearExporter:
     @staticmethod
     def _tag(media: Media) -> str:
         if media.media_type == MediaType.MOVIE:
-            return "#movies"
+            return "movies"
 
-        return "#tv"
+        return "tv"

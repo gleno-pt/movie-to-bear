@@ -17,13 +17,14 @@ def test_export_movie() -> None:
 
     result = exporter.export(media)
 
-    assert "# The Matrix" in result
-    assert "#movies" in result
-    assert "**Type:** Movie" in result
-    assert "**Release date:** 30 March 1999" in result
-    assert "**TMDB ID:** 603" in result
-    assert "[View on TMDB]" in result
-    assert "https://www.themoviedb.org/movie/603" in result
+    assert result.title == "The Matrix"
+    assert result.tags == ["movies"]
+
+    assert "**Type:** Movie" in result.text
+    assert "**Release date:** 30 March 1999" in result.text
+    assert "**TMDB ID:** 603" in result.text
+    assert "https://www.themoviedb.org/movie/603" in result.text
+    assert "A computer hacker..." in result.text
 
 
 def test_export_tv_show() -> None:
@@ -39,7 +40,8 @@ def test_export_tv_show() -> None:
 
     result = exporter.export(media)
 
-    assert "# Game of Thrones" in result
-    assert "#tv" in result
-    assert "**Type:** TV Show" in result
-    assert "https://www.themoviedb.org/tv/1399" in result
+    assert result.title == "Game of Thrones"
+    assert result.tags == ["tv"]
+
+    assert "**Type:** TV Show" in result.text
+    assert "https://www.themoviedb.org/tv/1399" in result.text

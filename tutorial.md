@@ -2951,3 +2951,230 @@ class BearNote(BaseModel):
     text: str
     tags: list[str]
 ```
+
+## Lesson 14 — Build the Bear X-Callback URL exporter
+
+### 1. Create a BearURLBuilder
+
+Create `src/movie_to_bear/exporters/bear_url.py` with the following content:
+```python
+from urllib.parse import urlencode
+
+from movie_to_bear.models.bear import BearNote
+
+
+class BearURLBuilder:
+    BASE_URL = "bear://x-callback-url/create"
+
+    def build(self, note: BearNote) -> str:
+        params = {
+            "title": note.title,
+            "text": note.text,
+            "tags": ",".join(note.tags),
+        }
+
+        return f"{self.BASE_URL}?{urlencode(params)}"
+```
+#### Why urlencode()?
+We should not contruct the URL manually:
+```python
+f"bear://x-callback-url/create?title={note.title}&text={note.text}"
+```
+
+This is because titles and titles can contain: spaces
+- &
+- ?
+- /
+- "#"
+- %
+- newlines
+- Unicode
+
+### 2. Test URL generation
+
+Create `tests/test_bear_url.py` with the following content:
+```python
+from movie_to_bear.exporters.bear_url import BearURLBuilder
+from movie_to_bear.models.bear import BearNote
+
+
+def test_build_bear_create_url() -> None:
+    note = BearNote(
+        title="The Matrix",
+        text="A computer hacker...",
+        tags=["movies", "tmdb"],
+    )
+
+    builder = BearURLBuilder()
+
+    result = builder.build(note)
+
+    assert result.startswith("bear://x-callback-url/create?")
+
+    assert "title=The+Matrix" in result
+    assert "text=A+computer+hacker..." in result
+    assert "tags=movies%2Ctmdb" in result
+```
+
+### 3. Test special characters
+
+This test is important.   
+Add the following method to `tests/test_bear_url.py`:
+```python
+def test_build_bear_create_url_encodes_special_characters() -> None:
+    note = BearNote(
+        title="The Matrix: Reloaded & More",
+        text="Line one\nLine two",
+        tags=["movies", "science fiction"],
+    )
+
+    builder = BearURLBuilder()
+
+    result = builder.build(note)
+
+    assert "The+Matrix%3A+Reloaded+%26+More" in result
+    assert "Line+one%0ALine+two" in result
+    assert "science+fiction" in result
+```
+This protects against building an invalid URL when the user's movie title contains punctuation or whitespace.
+
+### 4. Let's improve `BearNote`
+
+Keep the model simple.   
+It represents the data we need to send to Bear's `/create` action as per the current documentation.
+
+### 5. Separate content generation from URL generation
+
+The URL builder has a single responsibility. 
+
+### 6. Update `BearExporter`
+
+Our exporter should return a `BearNote`:
+```python
+from movie_to_bear.models.bear import BearNote
+from movie_to_bear.models.media import Media, MediaType
+
+
+class BearExporter:
+    def export(self, media: Media) -> BearNote:
+        lines = [
+            f"**Type:** {self._media_type(media)}",
+            "",
+        ]
+
+        if media.release_date:
+            lines.append(f"**Release date:** {media.release_date.strftime('%d %B %Y')}")
+
+        lines.extend(
+            [
+                f"**TMDB ID:** {media.id}",
+                f"[View on TMDB]({media.tmdb_url})",
+                "",
+            ]
+        )
+
+        if media.overview:
+            lines.extend(
+                [
+                    "## Overview",
+                    "",
+                    media.overview,
+                ]
+            )
+
+        return BearNote(
+            title=media.title,
+            text="\n".join(lines),
+            tags=[self._tag(media)],
+        )
+
+    @staticmethod
+    def _media_type(media: Media) -> str:
+        if media.media_type == MediaType.MOVIE:
+            return "Movie"
+
+        return "TV Show"
+
+    @staticmethod
+    def _tag(media: Media) -> str:
+        if media.media_type == MediaType.MOVIE:
+            return "movies"
+
+        return "tv"
+```
+
+Also, because Bear's `/create` API expects tags as a comma-separated list of tag names, we've removed the '#' from the tags.
+
+### 7. Update the exporter test
+
+Instead of testing values in the Markdown string, the `BearNote` should be tested.
+Update the `test_bear_exporter.py` with the following:
+```python
+def test_export_movie() -> None:
+    media = Media(
+        id=603,
+        media_type=MediaType.MOVIE,
+        title="The Matrix",
+        release_date="1999-03-30",
+        overview="A computer hacker...",
+    )
+
+    exporter = BearExporter()
+
+    result = exporter.export(media)
+
+    assert result.title == "The Matrix"
+    assert result.tags == ["movies"]
+
+    assert "**Type:** Movie" in result.text
+    assert "**Release date:** 30 March 1999" in result.text
+    assert "**TMDB ID:** 603" in result.text
+    assert "https://www.themoviedb.org/movie/603" in result.text
+    assert "A computer hacker..." in result.text
+
+
+def test_export_tv_show() -> None:
+    media = Media(
+        id=1399,
+        media_type=MediaType.TV,
+        title="Game of Thrones",
+        release_date="2011-04-17",
+        overview="Seven noble families...",
+    )
+
+    exporter = BearExporter()
+
+    result = exporter.export(media)
+
+    assert result.title == "Game of Thrones"
+    assert result.tags == ["tv"]
+
+    assert "**Type:** TV Show" in result.text
+    assert "https://www.themoviedb.org/tv/1399" in result.text
+```
+### 8. Our architecture is now becoming very clean
+
+```mermaid
+flowchart TD
+    tmdb[TMDB]
+    m_media(Media)
+    bear_exp[Bear Exporter]
+    m_bear_note(Bear Note)
+    md[Markdown]
+    url_builder[URL Builder]
+    .md[.md]
+    bear_url[bear://create]
+    tmdb-->m_media
+    m_media-->bear_exp
+    bear_exp-->m_bear_note
+    m_bear_note-->md
+    md-->.md
+    m_bear_note-->url_builder
+    url_builder-->bear_url
+```
+### 9. Run everything
+
+
+
+
+
