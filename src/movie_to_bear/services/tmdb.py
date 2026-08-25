@@ -1,3 +1,5 @@
+import asyncio
+
 from movie_to_bear.clients.tmdb import TMDBClient
 from movie_to_bear.models.media import (
     Media,
@@ -62,4 +64,26 @@ class TMDBService:
             ],
             total_pages=tmdb_response.total_pages,
             total_results=tmdb_response.total_results,
+        )
+
+    async def search(
+        self,
+        query: str,
+    ) -> MediaSearchResponse:
+        movie_response, tv_response = await asyncio.gather(
+            self.search_movies(query),
+            self.search_tv(query),
+        )
+
+        return MediaSearchResponse(
+            page=1,
+            results=[
+                *movie_response.results,
+                *tv_response.results,
+            ],
+            total_pages=max(
+                movie_response.total_pages,
+                tv_response.total_pages,
+            ),
+            total_results=(movie_response.total_results + tv_response.total_results),
         )

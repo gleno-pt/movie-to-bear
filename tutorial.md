@@ -2292,7 +2292,7 @@ AppState
 ├── tmdb_client
 └── ...
 ```
-## Issue
+### Issue
 
 1. AssertionError 
     ```bash
@@ -2407,7 +2407,6 @@ AppState
             }
         finally:
             await app_state.close()
-
     ```
 
 3. The function "asynccontextmanager" is deprecated   Annotating the return type as -> AsyncIterator[Foo] with @asynccontextmanager is deprecated. Use -> AsyncGenerator[Foo] instead.
@@ -2428,5 +2427,184 @@ AppState
             }
         finally:
             await app_state.close()
-
     ```
+
+
+## Lesson 11 — One search endpoint for Movies + TV
+
+### 1. Add a unified search method
+
+Add the following code to `src/movie_to_bear/services/tmdb.py`:
+```python
+import asyncio
+
+...
+
+
+async def search(
+    self,
+    query: str,
+) -> MediaSearchResponse:
+    movie_response, tv_response = await asyncio.gather(
+        self.search_movies(query),
+        self.search_tv(query),
+    )
+
+    return MediaSearchResponse(
+        page=1,
+        results=[
+            *movie_response.results,
+            *tv_response.results,
+        ],
+        total_pages=max(
+            movie_response.total_pages,
+            tv_response.total_pages,
+        ),
+        total_results=(movie_response.total_results + tv_response.total_results),
+    )
+``` 
+
+#### Why `asyncio.gather()`?
+
+We have two independent HTTP requests:
+1. Search Movie
+2. Search TV
+
+There is no reason to wait for the movie request to finish before starting the TV request.
+
+They can run concurrently using `asyncio.gather(...)`.
+
+This reduces the combined latency to approximately the slower of the two requests.
+
+
+### 2. Be careful with pagination
+
+TMDB paginates movie and TV results independently.
+Movie and TV page 1 doesn't map to a combined page 1.
+
+
+### 3. Add the route
+
+Add the following to `src/movie_to_bear/api/routes.py`:
+```python
+@router.get(
+    "/search",
+    response_model=MediaSearchResponse,
+)
+async def search(
+    query: str = Query(min_length=1),
+    service: TMDBService = Depends(get_tmdb_service),
+) -> MediaSearchResponse:
+    return await service.search(query)
+```
+
+### 4. Test the service
+
+Add the following to `` to test the orchestration, not TMDB itself:
+```python
+async def test_search() -> None:
+    client = AsyncMock()
+
+    client.search_movies.return_value = {
+        "page": 1,
+        "results": [
+            {
+                "id": 603,
+                "title": "The Matrix",
+                "release_date": "1999-03-30",
+                "overview": "A computer hacker...",
+                "poster_path": "/poster.jpg",
+            }
+        ],
+        "total_pages": 1,
+        "total_results": 1,
+    }
+
+    client.search_tv.return_value = {
+        "page": 1,
+        "results": [
+            {
+                "id": 1399,
+                "name": "Game of Thrones",
+                "first_air_date": "2011-04-17",
+                "overview": "Seven noble families...",
+                "poster_path": "/poster.jpg",
+            }
+        ],
+        "total_pages": 1,
+        "total_results": 1,
+    }
+
+    service = TMDBService(client)
+
+    result = await service.search("test")
+
+    assert result.page == 1
+    assert len(result.results) == 2
+
+    assert result.results[0].media_type == MediaType.MOVIE
+    assert result.results[0].title == "The Matrix"
+
+    assert result.results[1].media_type == MediaType.TV
+    assert result.results[1].title == "Game of Thrones"
+
+    assert result.total_results == 2
+
+    client.search_movies.assert_awaited_once_with("test")
+    client.search_tv.assert_awaited_once_with("test")
+```
+
+### 5. Test the API endpoint
+Add the following code to `tests/test_search.py`:
+```python
+def test_search() -> None:
+    fake_service = FakeTMDBService()
+
+    app.dependency_overrides[get_tmdb_service] = lambda: fake_service
+
+    try:
+        client = TestClient(app)
+
+        response = client.get(
+            "/api/v1/search",
+            params={"query": "The Office"},
+        )
+
+        assert response.status_code == 200
+
+        data = response.json()
+
+        assert len(data["results"]) == 2
+
+        assert data["results"][0]["media_type"] == "movie"
+        assert data["results"][1]["media_type"] == "tv"
+
+    finally:
+        app.dependency_overrides.clear()
+```
+As well as the following to `FakeTMDBService()`: 
+```python
+async def search(
+    self,
+    query: str,
+) -> MediaSearchResponse:
+    return MediaSearchResponse(
+        page=1,
+        results=[
+            Media(
+                id=603,
+                media_type=MediaType.MOVIE,
+                title="The Matrix",
+            ),
+            Media(
+                id=1399,
+                media_type=MediaType.TV,
+                title="Game of Thrones",
+            ),
+        ],
+        total_pages=1,
+        total_results=2,
+    )
+```
+
+### 6. Run the tests

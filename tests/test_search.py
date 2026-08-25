@@ -42,6 +42,28 @@ class FakeTMDBService:
             total_results=1,
         )
 
+    async def search(
+        self,
+        query: str,
+    ) -> MediaSearchResponse:
+        return MediaSearchResponse(
+            page=1,
+            results=[
+                Media(
+                    id=603,
+                    media_type=MediaType.MOVIE,
+                    title="The Matrix",
+                ),
+                Media(
+                    id=1399,
+                    media_type=MediaType.TV,
+                    title="Game of Thrones",
+                ),
+            ],
+            total_pages=1,
+            total_results=2,
+        )
+
 
 def test_search_movies() -> None:
     fake_service = FakeTMDBService()
@@ -88,6 +110,32 @@ def test_search_tv() -> None:
         assert data["results"][0]["id"] == 1399
         assert data["results"][0]["title"] == "Game of Thrones"
         assert data["results"][0]["media_type"] == "tv"
+
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_search() -> None:
+    fake_service = FakeTMDBService()
+
+    app.dependency_overrides[get_tmdb_service] = lambda: fake_service
+
+    try:
+        client = TestClient(app)
+
+        response = client.get(
+            "/api/v1/search",
+            params={"query": "The Office"},
+        )
+
+        assert response.status_code == 200
+
+        data = response.json()
+
+        assert len(data["results"]) == 2
+
+        assert data["results"][0]["media_type"] == "movie"
+        assert data["results"][1]["media_type"] == "tv"
 
     finally:
         app.dependency_overrides.clear()
