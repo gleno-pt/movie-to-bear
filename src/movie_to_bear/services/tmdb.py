@@ -87,3 +87,37 @@ class TMDBService:
             ),
             total_results=(movie_response.total_results + tv_response.total_results),
         )
+
+    async def get_movie(self, movie_id: int) -> Media:
+        response = await self._client.get_movie(movie_id)
+        print("get_movie response:", response)
+        return Media(
+            id=response["id"],
+            media_type=MediaType.MOVIE,
+            title=response["title"],
+            release_date=response.get("release_date"),
+            overview=response.get("overview"),
+            poster_path=response.get("poster_path"),
+        )
+
+    async def get_tv(self, tv_id: int) -> Media:
+        response = await self._client.get_tv(tv_id)
+
+        return Media(
+            id=response["id"],
+            media_type=MediaType.TV,
+            title=response["name"],
+            release_date=response.get("first_air_date"),
+            overview=response.get("overview"),
+            poster_path=response.get("poster_path"),
+        )
+
+    async def get_media(
+        self,
+        media_id: int,
+        media_type: MediaType,
+    ) -> Media:
+        if media_type == MediaType.MOVIE:
+            return await self.get_movie(media_id)
+
+        return await self.get_tv(media_id)

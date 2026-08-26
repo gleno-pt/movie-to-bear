@@ -3174,7 +3174,542 @@ flowchart TD
 ```
 ### 9. Run everything
 
+## Lesson 15 — POST /api/v1/export/bear
 
 
+### 1. Create an export response model
+
+Create `src/movie_to_bear/models/export.py` with the following content:
+```python
+from pydantic import BaseModel
 
 
+class BearExportResponse(BaseModel):
+    title: str
+    url: str
+```
+
+Why return a model instead of a `dict`.
+FastAPI can validate and document the response automatically.
+
+### 2. Decide what the endpoint accepts
+
+The simplest first version is:
+```text
+POST /api/v1/export/bear
+```
+with:
+```json
+{
+  "media_id": 603,
+  "media_type": "movie"
+}
+```
+The application then retrieves the complete media information from TMDB.
+
+This is better than asking the client to send the entire Media object.
+
+### 3. Create the request model
+
+Update `src/movie_to_bear/models/export.py` so it looks like the below script:
+
+```python
+from pydantic import BaseModel
+
+from movie_to_bear.models.media import MediaType
+
+
+class BearExportRequest(BaseModel):
+    media_id: int
+    media_type: MediaType
+
+
+class BearExportResponse(BaseModel):
+    title: str
+    url: str
+```
+
+### 4. Add a service method
+
+Add an export operation to our service layer.
+Add `src/movie_to_bear/services/tmdb.py` the following:
+```python
+async def get_media(
+    self,
+    media_id: int,
+    media_type: MediaType,
+) -> Media:
+    if media_type == MediaType.MOVIE:
+        return await self.get_movie(media_id)
+
+    return await self.get_tv(media_id)
+```
+`get_media()` is useful because the export operation doesn't need to care whether it's dealing with a movie or TV show.
+
+### 5. Create an export service
+
+Create `src/movie_to_bear/services/export.py` with the following content:
+```python
+from movie_to_bear.exporters.bear import BearExporter
+from movie_to_bear.exporters.bear_url import BearURLBuilder
+from movie_to_bear.models.export import BearExportResponse
+from movie_to_bear.models.media import Media
+from movie_to_bear.models.media import MediaType
+from movie_to_bear.services.tmdb import TMDBService
+
+
+class ExportService:
+    def __init__(
+        self,
+        tmdb_service: TMDBService,
+        bear_exporter: BearExporter,
+        bear_url_builder: BearURLBuilder,
+    ) -> None:
+        self.tmdb_service = tmdb_service
+        self.bear_exporter = bear_exporter
+        self.bear_url_builder = bear_url_builder
+
+    async def export_to_bear(
+        self,
+        media_id: int,
+        media_type: MediaType,
+    ) -> BearExportResponse:
+        media = await self.tmdb_service.get_media(
+            media_id,
+            media_type,
+        )
+
+        note = self.bear_exporter.export(media)
+
+        url = self.bear_url_builder.build(note)
+
+        return BearExportResponse(
+            title=note.title,
+            url=url,
+        )
+```
+
+### 6. Why have ExportService?
+
+Routes should not have orchestration logic.
+
+> Routes handle HTTP. Services handle application logic.
+
+### 7. Dependency injection
+
+We need a dependency for `ExportService`.
+
+Add the following to `src/movie_to_bear/api/dependencies.py`:
+```python
+from movie_to_bear.exporters.bear import BearExporter
+from movie_to_bear.exporters.bear_url import BearURLBuilder
+from movie_to_bear.services.export import ExportService
+
+
+def get_export_service(
+    tmdb_service: TMDBService = Depends(get_tmdb_service),
+) -> ExportService:
+    return ExportService(
+        tmdb_service=tmdb_service,
+        bear_exporter=BearExporter(),
+        bear_url_builder=BearURLBuilder(),
+    )
+```
+
+### 8. Add the route
+
+Create or update `src/movie_to_bear/api/routes/export.py`:
+```python
+from fastapi import APIRouter, Depends
+
+from movie_to_bear.api.dependencies import get_export_service
+from movie_to_bear.models.export import (
+    BearExportRequest,
+    BearExportResponse,
+)
+from movie_to_bear.services.export import ExportService
+
+
+router = APIRouter(
+    prefix="/export",
+    tags=["export"],
+)
+
+
+@router.post(
+    "/bear",
+    response_model=BearExportResponse,
+)
+async def export_to_bear(
+    request: BearExportRequest,
+    service: ExportService = Depends(get_export_service),
+) -> BearExportResponse:
+    return await service.export_to_bear(
+        media_id=request.media_id,
+        media_type=request.media_type,
+    )
+```
+
+### 9. The resulting API
+Send:
+```text
+POST /api/v1/export/bear
+Content-Type: application/json
+```
+with:
+```json
+{
+  "media_id": 603,
+  "media_type": "movie"
+}
+```
+and conceptually get:
+```json
+{
+  "title": "The Matrix",
+  "url": "bear://x-callback-url/create?..."
+}
+```
+The client can then open the returned URL.
+
+
+### 10. Test the service first
+
+Create `tests/test_export_service.py` with th following content:
+```python
+async def test_export_to_bear() -> None:
+    tmdb_service = AsyncMock()
+    bear_exporter = Mock()
+    bear_url_builder = Mock()
+
+    media = Media(
+        id=603,
+        media_type=MediaType.MOVIE,
+        title="The Matrix",
+    )
+
+    note = BearNote(
+        title="The Matrix",
+        text="**Type:** Movie",
+        tags=["movies"],
+    )
+
+    tmdb_service.get_media.return_value = media
+    bear_exporter.export.return_value = note
+    bear_url_builder.build.return_value = (
+        "bear://x-callback-url/create?..."
+    )
+
+    service = ExportService(
+        tmdb_service=tmdb_service,
+        bear_exporter=bear_exporter,
+        bear_url_builder=bear_url_builder,
+    )
+
+    result = await service.export_to_bear(
+        media_id=603,
+        media_type=MediaType.MOVIE,
+    )
+
+    assert result.title == "The Matrix"
+    assert result.url == "bear://x-callback-url/create?..."
+
+    tmdb_service.get_media.assert_awaited_once_with(
+        603,
+        MediaType.MOVIE,
+    )
+
+    bear_exporter.export.assert_called_once_with(media)
+    bear_url_builder.build.assert_called_once_with(note)
+```
+
+### 11. Test the API
+Override `get_export_service` with a fake service, as with `get_tmdb_service`.
+
+
+### 12. Run the complete test suite
+The below bash script will run the test suite:
+```bash
+#!/usr/bin/env bash
+clear
+
+set -u
+
+echo "==> Running Ruff lint checks..."
+
+if ! uv run ruff check .; then
+    echo "Ruff found linting issues. Applying fixes..."
+    uv run ruff check . --fix
+
+    if ! uv run ruff check .; then
+        echo "ERROR: Ruff linting failed after applying fixes."
+        exit 1
+    fi
+fi
+
+echo "==> Running Ruff format check..."
+
+if ! uv run ruff format --check .; then
+    echo "Ruff formatting issues found. Applying formatting..."
+    uv run ruff format .
+
+    if ! uv run ruff format --check .; then
+        echo "ERROR: Ruff formatting failed after applying fixes."
+        exit 1
+    fi
+fi
+
+echo "==> Running tests with coverage..."
+
+if ! uv run coverage run -m pytest; then
+    echo "ERROR: Tests failed. Application will not be started."
+    exit 1
+fi
+
+echo "==> Checking test coverage..."
+
+if ! uv run coverage report --fail-under=80; then
+    echo "ERROR: Test coverage is below 80%. Application will not be started."
+    exit 1
+fi
+
+echo "==> All checks passed."
+echo "==> Starting FastAPI application..."
+
+exec uv run uvicorn movie_to_bear.main:app --reload
+```
+
+### Issue
+1. Cannot access attribute "get_movie" for class "TMDBService*"   Attribute "get_movie" is unknown Cannot access attribute "get_tv" for class "TMDBService*"   Attribute "get_tv" is unknown
+    Add `get_movie()`and `get_tv()` to `TMDBClient`, ``:
+    ```python
+    async def get_movie(self, movie_id: int) -> dict:
+    logger.info(
+        "tmdb_get",
+        media_type="movie",
+        media_id=movie_id,
+    )
+
+    response = await self._http_client.get(
+        f"/movie/{movie_id}",
+    )
+
+    response.raise_for_status()
+
+    logger.info(
+        "tmdb_response",
+        media_type="movie",
+        media_id=movie_id,
+        status_code=response.status_code,
+    )
+
+    return response.json()
+
+    async def get_tv(self, tv_id: int) -> dict:
+        logger.info(
+            "tmdb_get",
+            media_type="tv",
+            media_id=tv_id,
+        )
+
+        response = await self._http_client.get(
+            f"/tv/{tv_id}",
+        )
+
+        response.raise_for_status()
+
+        logger.info(
+            "tmdb_response",
+            media_type="tv",
+            media_id=tv_id,
+            status_code=response.status_code,
+        )
+
+        return response.json()
+    ```
+    Also add the two methods to `TMDBService`, `src/movie_to_bear/services/tmdb.py`:
+    ```python
+    async def get_movie(self, movie_id: int) -> Media:
+        response = await self.client.get_movie(movie_id)
+
+        return Media(
+            id=response["id"],
+            media_type=MediaType.MOVIE,
+            title=response["title"],
+            release_date=response.get("release_date"),
+            overview=response.get("overview"),
+            poster_path=response.get("poster_path"),
+        )
+
+   async def get_tv(self, tv_id: int) -> Media:
+    response = await self.client.get_tv(tv_id)
+
+    return Media(
+        id=response["id"],
+        media_type=MediaType.TV,
+        title=response["name"],
+        release_date=response.get("first_air_date"),
+        overview=response.get("overview"),
+        poster_path=response.get("poster_path"),
+    )     
+
+    async def get_media(
+    self,
+    media_id: int,
+    media_type: MediaType,
+    ) -> Media:
+        if media_type == MediaType.MOVIE:
+            return await self.get_movie(media_id)
+
+        return await self.get_tv(media_id)
+    ```
+
+    Add client tests to `tests/test_tmdb.py`:
+    ```python
+    async def test_get_movie() -> None:
+        request = httpx.Request(
+            "GET",
+            "https://api.themoviedb.org/3/movie/603",
+        )
+
+        response = httpx.Response(
+            status_code=200,
+            request=request,
+            json={
+                "page": 1,
+                "results": [
+                    {
+                        "id": 603,
+                        "title": "The Matrix",
+                        "release_date": "1999-03-30",
+                        "overview": "A computer hacker learns...",
+                        "poster_path": "/poster.jpg",
+                    }
+                ],
+                "total_pages": 1,
+                "total_results": 1,
+            },
+        )
+
+        http_client = AsyncMock(spec=httpx.AsyncClient)
+        http_client.get.return_value = response
+
+        settings = Settings(
+            tmdb_api_token="test-token",
+        )
+
+        client = TMDBClient(
+            settings=settings,
+            http_client=http_client,
+        )
+
+        result = await client.get_movie(603)
+
+        assert result["page"] == 1
+        assert result["results"][0]["id"] == 603
+        assert result["results"][0]["title"] == "The Matrix"
+
+        http_client.get.assert_awaited_once_with(
+            "/movie/603",
+        )
+
+    async def test_get_tv() -> None:
+        request = httpx.Request(
+            "GET",
+            "https://api.themoviedb.org/3/tv",
+        )
+
+        response = httpx.Response(
+            status_code=200,
+            request=request,
+            json={
+                "page": 1,
+                "results": [
+                    {
+                        "id": 1399,
+                        "name": "Game of Thrones",
+                        "first_air_date": "2011-04-17",
+                        "overview": "Seven noble families...",
+                        "poster_path": "/poster.jpg",
+                    }
+                ],
+                "total_pages": 1,
+                "total_results": 1,
+            },
+        )
+
+        http_client = AsyncMock(spec=httpx.AsyncClient)
+        http_client.get.return_value = response
+
+        settings = Settings(
+            tmdb_api_token="test-token",
+        )
+
+        client = TMDBClient(
+            settings=settings,
+            http_client=http_client,
+        )
+
+        result = await client.get_tv(1399)
+
+        assert result["page"] == 1
+        assert result["results"][0]["id"] == 1399
+        assert result["results"][0]["name"] == "Game of Thrones"
+
+        http_client.get.assert_awaited_once_with(
+            "/tv/1399",
+        )
+
+
+    ```
+
+    Add tests to `tests/test_tmdb_service.py`:
+    ```python
+    async def test_get_movie() -> None:
+        client = AsyncMock()
+
+        client.get_movie.return_value = {
+            "id": 603,
+            "title": "The Matrix",
+            "release_date": "1999-03-30",
+            "overview": "Seven noble families...",
+            "poster_path": "/poster.jpg",
+        }
+        service = TMDBService(client)
+
+        result = await service.get_movie(603)
+
+        assert result.id == 603
+        assert result.title == "The Matrix"
+        assert result.media_type == MediaType.MOVIE
+        assert result.release_date is not None
+        assert result.release_date.year == 1999
+
+        client.get_movie.assert_awaited_once_with(603)
+
+
+    async def test_get_tv() -> None:
+        client = AsyncMock()
+
+        client.get_tv.return_value = {
+            "id": 1399,
+            "name": "Game of Thrones",
+            "first_air_date": "2011-04-17",
+            "overview": "Seven noble families...",
+            "poster_path": "/poster.jpg",
+        }
+
+        service = TMDBService(client)
+
+        result = await service.get_tv(1399)
+
+        assert result.id == 1399
+        assert result.media_type == MediaType.TV
+        assert result.title == "Game of Thrones"
+        assert result.release_date == date(2011, 4, 17)
+        assert result.overview == "Seven noble families..."
+        assert result.poster_path == "/poster.jpg"
+
+        client.get_tv.assert_awaited_once_with(1399)
+
+    ```

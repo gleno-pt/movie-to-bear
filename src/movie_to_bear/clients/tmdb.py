@@ -67,3 +67,47 @@ class TMDBClient:
         )
 
         return response.json()
+
+    async def get_movie(self, movie_id: int) -> dict:
+        logger.info(
+            "tmdb_get",
+            media_type="movie",
+            media_id=movie_id,
+        )
+
+        response = await self._http_client.get(
+            f"/movie/{movie_id}",
+        )
+
+        response.raise_for_status()
+
+        logger.info(
+            "tmdb_response",
+            media_type="movie",
+            media_id=movie_id,
+            status_code=response.status_code,
+        )
+
+        return response.json()
+
+    async def get_tv(self, tv_id: int) -> dict:
+        logger.info(
+            "tmdb_get",
+            media_type="tv",
+            media_id=tv_id,
+        )
+
+        response = await self._http_client.get(
+            f"/tv/{tv_id}",
+        )
+
+        response.raise_for_status()
+
+        logger.info(
+            "tmdb_response",
+            media_type="tv",
+            media_id=tv_id,
+            status_code=response.status_code,
+        )
+
+        return response.json()

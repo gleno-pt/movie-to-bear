@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, Query
 
-from movie_to_bear.api.dependencies import get_tmdb_service
+from movie_to_bear.api.dependencies import get_export_service, get_tmdb_service
+from movie_to_bear.models.export import BearExportRequest, BearExportResponse
 from movie_to_bear.models.media import MediaSearchResponse
+from movie_to_bear.services.export import ExportService
 from movie_to_bear.services.tmdb import TMDBService
 
 router = APIRouter(
@@ -40,3 +42,17 @@ async def search(
     service: TMDBService = Depends(get_tmdb_service),
 ) -> MediaSearchResponse:
     return await service.search(query)
+
+
+@router.post(
+    "/bear",
+    response_model=BearExportResponse,
+)
+async def export_to_bear(
+    request: BearExportRequest,
+    service: ExportService = Depends(get_export_service),
+) -> BearExportResponse:
+    return await service.export_to_bear(
+        media_id=request.media_id,
+        media_type=request.media_type,
+    )

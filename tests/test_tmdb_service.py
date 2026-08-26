@@ -1,3 +1,4 @@
+from datetime import date
 from unittest.mock import AsyncMock
 
 from movie_to_bear.models.media import MediaSearchResponse, MediaType
@@ -123,3 +124,51 @@ async def test_search() -> None:
 
     client.search_movies.assert_awaited_once_with("test")
     client.search_tv.assert_awaited_once_with("test")
+
+
+async def test_get_movie() -> None:
+    client = AsyncMock()
+
+    client.get_movie.return_value = {
+        "id": 603,
+        "title": "The Matrix",
+        "release_date": "1999-03-30",
+        "overview": "Seven noble families...",
+        "poster_path": "/poster.jpg",
+    }
+    service = TMDBService(client)
+
+    result = await service.get_movie(603)
+
+    assert result.id == 603
+    assert result.title == "The Matrix"
+    assert result.media_type == MediaType.MOVIE
+    assert result.release_date is not None
+    assert result.release_date.year == 1999
+
+    client.get_movie.assert_awaited_once_with(603)
+
+
+async def test_get_tv() -> None:
+    client = AsyncMock()
+
+    client.get_tv.return_value = {
+        "id": 1399,
+        "name": "Game of Thrones",
+        "first_air_date": "2011-04-17",
+        "overview": "Seven noble families...",
+        "poster_path": "/poster.jpg",
+    }
+
+    service = TMDBService(client)
+
+    result = await service.get_tv(1399)
+
+    assert result.id == 1399
+    assert result.media_type == MediaType.TV
+    assert result.title == "Game of Thrones"
+    assert result.release_date == date(2011, 4, 17)
+    assert result.overview == "Seven noble families..."
+    assert result.poster_path == "/poster.jpg"
+
+    client.get_tv.assert_awaited_once_with(1399)
